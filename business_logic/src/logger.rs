@@ -15,11 +15,12 @@ pub enum LoggerEvent {
     DoorEvent(door::DoorEvent),
     // PowerEvent(aggregator::PowerEvent),
     // CompressorEvent(aggregator::CompressorEvent),
-    // AlarmStateChange(aggregator::AlarmState),
+    AlarmStateChange(AlarmTrigger),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AlarmTrigger {
+    NoTrigger,
     LowTemperatureStart,
     LowTemperatureCancel,
     HighTemperatureStart,
@@ -40,7 +41,7 @@ impl Logger {
         }
     }
 
-    pub fn process_event(&mut self, event: LoggerEvent, ts: Timestamp) -> Result<(), TimestampError> {
+    pub fn process_event(&mut self, event: LoggerEvent, ts: Timestamp) -> Result<AlarmTrigger, TimestampError> {
         match event {
             LoggerEvent::TemperatureSample(sample) => {
                 self.agg.new_temperatures(sample, ts);
@@ -58,6 +59,6 @@ impl Logger {
             //     self.agg.set_alarm_state(state, ts);
             // }
         }
-        Ok(())
+        Ok(AlarmTrigger::NoTrigger) // Placeholder, actual logic to determine trigger should be implemented
     }
 }

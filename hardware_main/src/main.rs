@@ -19,31 +19,71 @@ use embassy_stm32::{bind_interrupts, exti::ExtiInput, peripherals};
 use embassy_stm32::{gpio::{Level, Output, Pull, Speed}, i2c::{ErrorInterruptHandler, EventInterruptHandler, I2c}, rtc::{Rtc, RtcConfig}, time::Hertz, Config};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::{Channel, Sender};
-use embassy_time::{Duration, Ticker, Timer};
+use embassy_time::{Duration, Instant, Ticker, Timer};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 
 // Internal modules, both this crate and the business logic crate.
-use business_logic::{door::DoorEvent, logger::{AlarmTrigger, Logger, LoggerEvent, TemperatureSample}};
+use business_logic::{door::DoorEvent, logger::{self, AlarmTrigger, Logger, LoggerEvent, TemperatureSample}};
 use business_logic::timestamp::Timestamp;
 use fmt::{info, warn, unwrap};
 use rtclock::{Rtclock};
 use temp_sensor::{AMBIENT_ADDRESS, DualTempSensor, VACCINE_ADDRESS};
 
+enum TempAlarmActive {
+    NoAlarm,
+    LowTemperature,
+    HighTemperature,
+}
+
+struct AlarmTimerState {
+    pub door_active: bool,
+    pub temp_alarm_active: TempAlarmActive,
+    pub door_expires: Instant,
+    pub temp_alarm_expires: Instant,
+}
+
+impl AlarmTimerState {
+    pub fn new() -> Self {
+        Self {
+            door_active: false,
+            temp_alarm_active: TempAlarmActive::NoAlarm,
+            door_expires: Instant::now(),
+            temp_alarm_expires: Instant::now(),
+        }
+    }
+
+    pub fn process_trigger(&mut self, trigger: AlarmTrigger, now: Instant) {
+        match trigger {
+            AlarmTrigger::NoTrigger => {}
+            AlarmTrigger::LowTemperatureStart => {
+                self.temp_alarm_active = TempAlarmActive::LowTemperature;
+                self.temp_alarm_expires = now + Duration::from_secs(60); // Example duration
+            }
+            AlarmTrigger::LowTemperatureCancel => {
+                self.temp_alarm_active = TempAlarmActive::NoAlarm;
+            }
+            AlarmTrigger::HighTemperatureStart => {
+                self.temp_alarm_active = TempAlarmActive::HighTemperature;
+                self.temp_alarm_expires = now + Duration::from_secs(60); // Example duration
+            }
+            AlarmTrigger::HighTemperatureCancel => {
+                self.temp_alarm_active = TempAlarmActive::NoAlarm;
+            }
+            AlarmTrigger::DoorOpenStart => {
+                self.door_active = true;
+                self.door_expires = now + Duration::from_secs(30); // Example duration
+            }
+            AlarmTrigger::DoorOpenCancel => {
+                self.door_active = false;
+            }
+        }
+    }
+}
+
 // Communicate between tasks using channels.
 static EVENT_CHANNEL: Channel<ThreadModeRawMutex, LoggerEvent, 8> = Channel::new();
 static ALARM_CHANNEL: Channel<ThreadModeRawMutex, AlarmTrigger, 8> = Channel::new();
-
-// enum ButtonEvent {
-//     Pressed,
-//     Released,
-// }
-
-// enum Events {
-//     Button(ButtonEvent),
-//     TempReading((f32, f32)), // (ambient temperature, vaccine temperature)
-// }
-
 
 
 #[embassy_executor::main]
@@ -127,7 +167,9 @@ async fn main(spawner: Spawner) {
     );
     let mut temp_sensor = DualTempSensor::new(i2c, AMBIENT_ADDRESS, VACCINE_ADDRESS, pwrv_nen);
 
-    // Spawn the button task
+    let mut logger = Logger::new(rt_clock.get_timestamp());
+
+    // Spawn the tasks
     spawner.spawn(button(btn, EVENT_CHANNEL.sender())).unwrap();
     spawner.spawn(led_blink(led)).unwrap();
     spawner.spawn(get_temperature(temp_sensor, EVENT_CHANNEL.sender())).unwrap();
@@ -154,6 +196,8 @@ async fn main(spawner: Spawner) {
                 info!("{=str}", now.create_iso8601_str());
             }
         }
+        // Process the event in the logger.
+        let alarm_trigger = logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger);
 
     }
 }
@@ -197,3 +241,10 @@ async fn get_temperature(
         ticker.next().await;
     }
 }
+
+// new task alarm_timeouts
+// reads from the ALARM_CHANNEL, writes to the EVENT_CHANNEL
+// Uses a mutable AlarmTimerState to track the state of the alarms.
+// Maintains the state of the door and temperature alarms, and their expiration times.
+// Listens for AlarmTrigger events and updates the state.
+// When an alarm expires, it sends a LoggerEvent to the EVENT_CHANNEL.

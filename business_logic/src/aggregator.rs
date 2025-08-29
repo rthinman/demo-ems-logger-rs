@@ -94,19 +94,16 @@ impl Aggregator {
 
     }
 
-    // TODO: this is a placeholder.
+    // TODO: this is a placeholder. In particular, it needs to handle direct transition between low and high alarms being active
     pub fn set_alarm_state(&mut self, state: AlarmTrigger, now: Timestamp) {
         match state {
             AlarmTrigger::LowTemperatureStart => {
                 self.low_alarm_start = Some(now);
             }
-            AlarmTrigger::LowTemperatureCancel => {
-                self.low_alarm_start = None;
-            }
             AlarmTrigger::HighTemperatureStart => {
                 self.high_alarm_start = Some(now);
             }
-            AlarmTrigger::HighTemperatureCancel => {
+            AlarmTrigger::TemperatureCancel => {
                 self.high_alarm_start = None;
             }
             AlarmTrigger::DoorOpenStart => {

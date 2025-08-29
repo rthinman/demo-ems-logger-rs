@@ -23,9 +23,8 @@ pub enum AlarmTrigger {
     #[default]
     NoTrigger,
     LowTemperatureStart,
-    LowTemperatureCancel,
     HighTemperatureStart,
-    HighTemperatureCancel,
+    TemperatureCancel,
     DoorOpenStart,
     DoorOpenCancel,
 }
@@ -42,6 +41,7 @@ impl Logger {
         }
     }
 
+    // TODO: track alarm status so we don't retrigger if already alarming.
     pub fn process_event(&mut self, event: LoggerEvent, ts: Timestamp) -> Result<AlarmTrigger, TimestampError> {
         match event {
             LoggerEvent::TemperatureSample(sample) => {
@@ -52,7 +52,7 @@ impl Logger {
                     } else if vax > 8.0 {
                         Ok(AlarmTrigger::HighTemperatureStart)
                     } else {
-                        Ok(AlarmTrigger::LowTemperatureCancel)
+                        Ok(AlarmTrigger::TemperatureCancel)
                     }
                 } else {
                     Ok(AlarmTrigger::NoTrigger)

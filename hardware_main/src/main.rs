@@ -62,26 +62,27 @@ impl AlarmTimerState {
         }
     }
 
-    // TODO: change to a general "temperature cancel", and don't change the expiry time if already active and a new start comes in.
     pub fn process_trigger(&mut self, trigger: AlarmTrigger, now: Instant) {
         match trigger {
             AlarmTrigger::NoTrigger => {}
             AlarmTrigger::LowTemperatureStart => {
-                info!("Low temperature alarm started");
-                self.temperature_active = TempTimerActive::LowTemperature;
-                self.temperature_expires = now + Duration::from_secs(60); // Example duration
-            }
-            AlarmTrigger::LowTemperatureCancel => {
-                info!("Low temperature alarm canceled");
-                self.temperature_active = TempTimerActive::NoneActive;
+                if self.temperature_active != TempTimerActive::LowTemperature {
+                    // Don't retrigger if already active.
+                    info!("Low temperature alarm started");
+                    self.temperature_active = TempTimerActive::LowTemperature;
+                    self.temperature_expires = now + Duration::from_secs(60); // Example duration
+                }
             }
             AlarmTrigger::HighTemperatureStart => {
-                info!("High temperature alarm started");
-                self.temperature_active = TempTimerActive::HighTemperature;
-                self.temperature_expires = now + Duration::from_secs(60); // Example duration
+                if self.temperature_active != TempTimerActive::HighTemperature {
+                    // Don't retrigger if already active.
+                    info!("High temperature alarm started");
+                    self.temperature_active = TempTimerActive::HighTemperature;
+                    self.temperature_expires = now + Duration::from_secs(60); // Example duration
+                }
             }
-            AlarmTrigger::HighTemperatureCancel => {
-                info!("High temperature alarm canceled");
+            AlarmTrigger::TemperatureCancel => {
+                info!("Temperature alarm canceled");
                 self.temperature_active = TempTimerActive::NoneActive;
             }
             AlarmTrigger::DoorOpenStart => {
@@ -303,6 +304,7 @@ async fn alarm_timeouts(
         
         let received_trigger = match next_alarm_time {
             Some(alarm_time) => {
+                // There is an active alarm, wait for either a new trigger from the channel or the timer to expire.
                 match embassy_futures::select::select(
                     alarm_receiver.receive(),
                     Timer::at(alarm_time)
@@ -312,18 +314,17 @@ async fn alarm_timeouts(
                 }
             }
             None => {
-                // No active alarms, just wait for triggers
+                // No active alarms, just wait for triggers.
                 Some(alarm_receiver.receive().await)
             }
         };
         
+        let now = Instant::now();
+        
         // Process any received trigger
         if let Some(trigger) = received_trigger {
-            let now = Instant::now();
             alarm_state.process_trigger(trigger, now);
         }
-        
-        let now = Instant::now();
         
         // Check if door alarm timer has expired
         if alarm_state.door_active && now >= alarm_state.door_expires {

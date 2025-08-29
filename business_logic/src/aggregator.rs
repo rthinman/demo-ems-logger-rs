@@ -1,7 +1,7 @@
 //! This module contains the business logic for aggregating temperature, 
 //! door opening, and power data
 
-use crate::{door::{DoorEvent}, logger::{LoggerEvent, TemperatureSample}, timestamp::{Timestamp, TimestampError}};
+use crate::{door::{DoorEvent}, logger::{AlarmTrigger, LoggerEvent, TemperatureSample}, timestamp::{Timestamp, TimestampError}};
 
 // Structs to hold data
 
@@ -73,11 +73,51 @@ impl Aggregator {
 
     }
 
-    pub fn process_door_event(&mut self, door: DoorEvent, now: Timestamp) {
+    pub fn process_door_event(&mut self, door: DoorEvent, now: Timestamp) -> AlarmTrigger {
+        match door {
+            DoorEvent::Opened => {
+                if self.door_open_start.is_none() {
+                    self.door_open_start = Some(now);
+                    return AlarmTrigger::DoorOpenStart;
+                }
+            }
+            DoorEvent::Closed => {
+                if let Some(open_time) = self.door_open_start {
+                    let open_duration = now.seconds - open_time.seconds; // TODO: check logic.
+                    self.long_record.vaccine_door_seconds += open_duration;
+                    self.door_open_start = None;
+                    return AlarmTrigger::DoorOpenCancel;
+                }
+            }
+        }
+        AlarmTrigger::NoTrigger
 
     }
 
-
+    // TODO: this is a placeholder.
+    pub fn set_alarm_state(&mut self, state: AlarmTrigger, now: Timestamp) {
+        match state {
+            AlarmTrigger::LowTemperatureStart => {
+                self.low_alarm_start = Some(now);
+            }
+            AlarmTrigger::LowTemperatureCancel => {
+                self.low_alarm_start = None;
+            }
+            AlarmTrigger::HighTemperatureStart => {
+                self.high_alarm_start = Some(now);
+            }
+            AlarmTrigger::HighTemperatureCancel => {
+                self.high_alarm_start = None;
+            }
+            AlarmTrigger::DoorOpenStart => {
+                self.door_open_start = Some(now);
+            }
+            AlarmTrigger::DoorOpenCancel => {
+                self.door_open_start = None;
+            }
+            _ => {}
+        }
+    }
 
 
 

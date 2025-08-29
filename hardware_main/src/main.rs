@@ -30,51 +30,67 @@ use fmt::{info, warn, unwrap};
 use rtclock::{Rtclock};
 use temp_sensor::{AMBIENT_ADDRESS, DualTempSensor, VACCINE_ADDRESS};
 
-enum TempAlarmActive {
-    NoAlarm,
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum TempTimerActive {
+    #[default]
+    NoneActive,
     LowTemperature,
     HighTemperature,
 }
 
-struct AlarmTimerState {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AlarmTimerState {
     pub door_active: bool,
-    pub temp_alarm_active: TempAlarmActive,
-    pub door_expires: Instant,
-    pub temp_alarm_expires: Instant,
+    pub temperature_active: TempTimerActive,
+    door_expires: Instant,
+    temperature_expires: Instant,
+}
+
+impl Default for AlarmTimerState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AlarmTimerState {
     pub fn new() -> Self {
         Self {
             door_active: false,
-            temp_alarm_active: TempAlarmActive::NoAlarm,
+            temperature_active: TempTimerActive::NoneActive,
             door_expires: Instant::now(),
-            temp_alarm_expires: Instant::now(),
+            temperature_expires: Instant::now(),
         }
     }
 
+    // TODO: change to a general "temperature cancel", and don't change the expiry time if already active and a new start comes in.
     pub fn process_trigger(&mut self, trigger: AlarmTrigger, now: Instant) {
         match trigger {
             AlarmTrigger::NoTrigger => {}
             AlarmTrigger::LowTemperatureStart => {
-                self.temp_alarm_active = TempAlarmActive::LowTemperature;
-                self.temp_alarm_expires = now + Duration::from_secs(60); // Example duration
+                info!("Low temperature alarm started");
+                self.temperature_active = TempTimerActive::LowTemperature;
+                self.temperature_expires = now + Duration::from_secs(60); // Example duration
             }
             AlarmTrigger::LowTemperatureCancel => {
-                self.temp_alarm_active = TempAlarmActive::NoAlarm;
+                info!("Low temperature alarm canceled");
+                self.temperature_active = TempTimerActive::NoneActive;
             }
             AlarmTrigger::HighTemperatureStart => {
-                self.temp_alarm_active = TempAlarmActive::HighTemperature;
-                self.temp_alarm_expires = now + Duration::from_secs(60); // Example duration
+                info!("High temperature alarm started");
+                self.temperature_active = TempTimerActive::HighTemperature;
+                self.temperature_expires = now + Duration::from_secs(60); // Example duration
             }
             AlarmTrigger::HighTemperatureCancel => {
-                self.temp_alarm_active = TempAlarmActive::NoAlarm;
+                info!("High temperature alarm canceled");
+                self.temperature_active = TempTimerActive::NoneActive;
             }
             AlarmTrigger::DoorOpenStart => {
+                info!("Door open alarm started");
                 self.door_active = true;
                 self.door_expires = now + Duration::from_secs(30); // Example duration
             }
             AlarmTrigger::DoorOpenCancel => {
+                info!("Door open alarm canceled");
                 self.door_active = false;
             }
         }
@@ -173,32 +189,42 @@ async fn main(spawner: Spawner) {
     spawner.spawn(button(btn, EVENT_CHANNEL.sender())).unwrap();
     spawner.spawn(led_blink(led)).unwrap();
     spawner.spawn(get_temperature(temp_sensor, EVENT_CHANNEL.sender())).unwrap();
+    spawner.spawn(alarm_timeouts(ALARM_CHANNEL.receiver(), EVENT_CHANNEL.sender())).unwrap();
 
     warn!("Starting main loop");
+
+    let mut x: u32 = 0;
 
     loop {
         let event = EVENT_CHANNEL.receive().await;
         let now = rt_clock.get_timestamp();
 
-        match event {
+        let alarm_trigger = match event {
             LoggerEvent::DoorEvent(DoorEvent::Opened) => {
                 info!("Button pressed event received");
-                // let then = rtc.now().unwrap();
-                // info!("time: {:?}:{:?}", then.minute(), then.second());
+                logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger)
             }
             LoggerEvent::DoorEvent(DoorEvent::Closed) => {
                 info!("Button released event received");
+                logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger)
             }
             LoggerEvent::TemperatureSample(temperature) => {
-                // let ts = rt_clock.get_timestamp();
                 info!("Time: {}, TAMB: {} °C, TVC: {} °C", now.seconds, temperature.ambient, temperature.vaccine);
-                // let ts = rt_clock.get_timestamp();
                 info!("{=str}", now.create_iso8601_str());
+                logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger)
             }
-        }
+            LoggerEvent::AlarmStateChange(alarm_trigger) => {
+                info!("Alarm state change");
+                // info!("Alarm state change: {:?}", alarm_trigger);
+                logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger)
+            }
+        };
         // Process the event in the logger.
-        let alarm_trigger = logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger);
-
+        // let alarm_trigger = logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger);
+        // If there is an alarm trigger, send it to the alarm channel.
+        if alarm_trigger != AlarmTrigger::NoTrigger {
+            ALARM_CHANNEL.send(alarm_trigger).await;
+        }
     }
 }
 
@@ -242,9 +268,87 @@ async fn get_temperature(
     }
 }
 
-// new task alarm_timeouts
-// reads from the ALARM_CHANNEL, writes to the EVENT_CHANNEL
-// Uses a mutable AlarmTimerState to track the state of the alarms.
-// Maintains the state of the door and temperature alarms, and their expiration times.
-// Listens for AlarmTrigger events and updates the state.
-// When an alarm expires, it sends a LoggerEvent to the EVENT_CHANNEL.
+#[embassy_executor::task]
+async fn alarm_timeouts(
+    alarm_receiver: embassy_sync::channel::Receiver<'static, ThreadModeRawMutex, AlarmTrigger, 8>,
+    event_sender: Sender<'static, ThreadModeRawMutex, LoggerEvent, 8>,
+) {
+    let mut alarm_state = AlarmTimerState::new();
+    
+    loop {
+        let next_alarm_time = {
+            let mut earliest = None;
+            
+            if alarm_state.door_active {
+                earliest = Some(alarm_state.door_expires);
+            }
+            
+            match alarm_state.temperature_active {
+                TempTimerActive::LowTemperature | TempTimerActive::HighTemperature => {
+                    match earliest {
+                        Some(time) if alarm_state.temperature_expires < time => {
+                            earliest = Some(alarm_state.temperature_expires);
+                        }
+                        None => {
+                            earliest = Some(alarm_state.temperature_expires);
+                        }
+                        _ => {}
+                    }
+                }
+                TempTimerActive::NoneActive => {}
+            }
+            
+            earliest
+        };
+        
+        let received_trigger = match next_alarm_time {
+            Some(alarm_time) => {
+                match embassy_futures::select::select(
+                    alarm_receiver.receive(),
+                    Timer::at(alarm_time)
+                ).await {
+                    embassy_futures::select::Either::First(trigger) => Some(trigger),
+                    embassy_futures::select::Either::Second(_) => None,
+                }
+            }
+            None => {
+                // No active alarms, just wait for triggers
+                Some(alarm_receiver.receive().await)
+            }
+        };
+        
+        // Process any received trigger
+        if let Some(trigger) = received_trigger {
+            let now = Instant::now();
+            alarm_state.process_trigger(trigger, now);
+        }
+        
+        let now = Instant::now();
+        
+        // Check if door alarm timer has expired
+        if alarm_state.door_active && now >= alarm_state.door_expires {
+            info!("Door alarm timer expired");
+            alarm_state.door_active = false;
+            event_sender.send(LoggerEvent::AlarmStateChange(AlarmTrigger::DoorOpenStart)).await;
+        }
+        
+        // Check if temperature alarm timer has expired
+        match alarm_state.temperature_active {
+            TempTimerActive::LowTemperature => {
+                if now >= alarm_state.temperature_expires {
+                    info!("Low temperature alarm timer expired");
+                    alarm_state.temperature_active = TempTimerActive::NoneActive;
+                    event_sender.send(LoggerEvent::AlarmStateChange(AlarmTrigger::LowTemperatureStart)).await;
+                }
+            }
+            TempTimerActive::HighTemperature => {
+                if now >= alarm_state.temperature_expires {
+                    info!("High temperature alarm timer expired");
+                    alarm_state.temperature_active = TempTimerActive::NoneActive;
+                    event_sender.send(LoggerEvent::AlarmStateChange(AlarmTrigger::HighTemperatureStart)).await;
+                }
+            }
+            TempTimerActive::NoneActive => {}
+        }
+    }
+}

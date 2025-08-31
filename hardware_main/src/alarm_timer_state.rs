@@ -1,7 +1,7 @@
 //! Alarm timer state management.
 
 use embassy_time::{Duration, Instant};
-use business_logic::logger::AlarmTrigger;
+use business_logic::logger::AlarmTimerTrigger;
 use crate::fmt::info;
 
 
@@ -37,10 +37,10 @@ impl AlarmTimerState {
         }
     }
 
-    pub fn process_trigger(&mut self, trigger: AlarmTrigger, now: Instant) {
+    pub fn process_trigger(&mut self, trigger: AlarmTimerTrigger, now: Instant) {
         match trigger {
-            AlarmTrigger::NoTrigger => {}
-            AlarmTrigger::LowTemperatureStart => {
+            AlarmTimerTrigger::NoTrigger => {}
+            AlarmTimerTrigger::LowTemperatureStart => {
                 if self.temperature_active != TempTimerActive::LowTemperature {
                     // Don't retrigger if already active.
                     info!("Low temperature alarm started");
@@ -48,7 +48,7 @@ impl AlarmTimerState {
                     self.temperature_expires = now + Duration::from_secs(60); // Example duration
                 }
             }
-            AlarmTrigger::HighTemperatureStart => {
+            AlarmTimerTrigger::HighTemperatureStart => {
                 if self.temperature_active != TempTimerActive::HighTemperature {
                     // Don't retrigger if already active.
                     info!("High temperature alarm started");
@@ -56,16 +56,16 @@ impl AlarmTimerState {
                     self.temperature_expires = now + Duration::from_secs(60); // Example duration
                 }
             }
-            AlarmTrigger::TemperatureCancel => {
+            AlarmTimerTrigger::TemperatureCancel => {
                 info!("Temperature alarm canceled");
                 self.temperature_active = TempTimerActive::NoneActive;
             }
-            AlarmTrigger::DoorOpenStart => {
+            AlarmTimerTrigger::DoorOpenStart => {
                 info!("Door open alarm started");
                 self.door_active = true;
                 self.door_expires = now + Duration::from_secs(30); // Example duration
             }
-            AlarmTrigger::DoorOpenCancel => {
+            AlarmTimerTrigger::DoorOpenCancel => {
                 info!("Door open alarm canceled");
                 self.door_active = false;
             }

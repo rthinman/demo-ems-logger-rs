@@ -1,9 +1,7 @@
 use arrayvec::ArrayString;
 use core::fmt::Write;
 
-const SHORT_SAMPLE_PERIOD: u32 = 900;     // 15 minutes in seconds.
-const LONG_SAMPLE_PERIOD: u32 = 8 * 3600; // 8 hours in seconds.
-
+use crate::constants::{AGGREGATION_PERIOD, SAMPLE_PERIOD};
 
 // TODO: implement Format for Timestamp
 
@@ -71,20 +69,20 @@ impl Timestamp {
     /// Get the last short sample period end timestamp.
     pub fn get_last_short_sample_end(&self) -> Timestamp {
         Timestamp {
-            seconds: (self.seconds / SHORT_SAMPLE_PERIOD) * SHORT_SAMPLE_PERIOD,
+            seconds: (self.seconds / SAMPLE_PERIOD) * SAMPLE_PERIOD,
         }
     }
 
     /// Get the last long sample period end timestamp.
     pub fn get_last_long_sample_end(&self) -> Timestamp {
         Timestamp {
-            seconds: (self.seconds / LONG_SAMPLE_PERIOD) * LONG_SAMPLE_PERIOD,
+            seconds: (self.seconds / AGGREGATION_PERIOD) * AGGREGATION_PERIOD,
         }
     }
 
     pub fn get_next_aggregation_start(&self) -> Timestamp {
         Timestamp {
-            seconds: (self.seconds / LONG_SAMPLE_PERIOD + 1) * LONG_SAMPLE_PERIOD,
+            seconds: (self.seconds / AGGREGATION_PERIOD + 1) * AGGREGATION_PERIOD,
         }
     }
 }

@@ -25,7 +25,7 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use panic_halt as _;
 
 // Internal modules, both this crate and the business logic crate.
-use business_logic::{door::DoorEvent, logger::{self, AlarmTrigger, Logger, LoggerEvent, TemperatureSample}};
+use business_logic::{door::DoorEvent, logger::{self, AlarmTimerTrigger, Logger, LoggerEvent, TemperatureSample}};
 use business_logic::timestamp::Timestamp;
 use alarm_timer_state::{AlarmTimerState, TempTimerActive};
 use fmt::{info, warn, unwrap};
@@ -35,7 +35,7 @@ use temp_sensor::{AMBIENT_ADDRESS, DualTempSensor, VACCINE_ADDRESS};
 
 // Communicate between tasks using channels.
 static EVENT_CHANNEL: Channel<ThreadModeRawMutex, LoggerEvent, 8> = Channel::new();
-static ALARM_CHANNEL: Channel<ThreadModeRawMutex, AlarmTrigger, 8> = Channel::new();
+static ALARM_CHANNEL: Channel<ThreadModeRawMutex, AlarmTimerTrigger, 8> = Channel::new();
 
 
 #[embassy_executor::main]
@@ -131,39 +131,45 @@ async fn main(spawner: Spawner) {
 
     let mut x: u32 = 0;
 
+    // The main loop performs the primary logging functions.
     loop {
+        // Wait for an an event from various subsystems.
         let event = EVENT_CHANNEL.receive().await;
         let now = rt_clock.get_timestamp();
 
+        // Match is to separate for logging purposes. If not needed, remove and uncomment the line below this statement.
         let alarm_trigger = match event {
             LoggerEvent::DoorEvent(DoorEvent::Opened) => {
                 info!("Button pressed event received");
-                logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger)
+                logger.process_event(event, now).unwrap_or(AlarmTimerTrigger::NoTrigger)
             }
             LoggerEvent::DoorEvent(DoorEvent::Closed) => {
                 info!("Button released event received");
-                logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger)
+                logger.process_event(event, now).unwrap_or(AlarmTimerTrigger::NoTrigger)
             }
             LoggerEvent::TemperatureSample(temperature) => {
                 info!("Time: {}, TAMB: {} °C, TVC: {} °C", now.seconds, temperature.ambient, temperature.vaccine);
                 info!("{=str}", now.create_iso8601_str());
-                logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger)
+                logger.process_event(event, now).unwrap_or(AlarmTimerTrigger::NoTrigger)
             }
             LoggerEvent::AlarmStateChange(alarm_trigger) => {
                 info!("Alarm state change");
                 // info!("Alarm state change: {:?}", alarm_trigger);
-                logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger)
+                logger.process_event(event, now).unwrap_or(AlarmTimerTrigger::NoTrigger)
             }
         };
+
         // Process the event in the logger.
         // let alarm_trigger = logger.process_event(event, now).unwrap_or(AlarmTrigger::NoTrigger);
+
         // If there is an alarm trigger, send it to the alarm channel.
-        if alarm_trigger != AlarmTrigger::NoTrigger {
+        if alarm_trigger != AlarmTimerTrigger::NoTrigger {
             ALARM_CHANNEL.send(alarm_trigger).await;
         }
     }
 }
 
+/// Task to handle button presses, which simulate door open/close events.
 #[embassy_executor::task]
 async fn button(mut btn: ExtiInput<'static>, msg: Sender<'static, ThreadModeRawMutex, LoggerEvent, 8>) {
     loop {
@@ -181,6 +187,7 @@ async fn button(mut btn: ExtiInput<'static>, msg: Sender<'static, ThreadModeRawM
     }
 }
 
+/// Task to blink an LED to show the system is alive.
 #[embassy_executor::task]
 async fn led_blink(mut led: Output<'static>) {
     loop {
@@ -191,6 +198,7 @@ async fn led_blink(mut led: Output<'static>) {
     }
 }
 
+/// Task to read temperatures from the sensors and send them to the logger.
 #[embassy_executor::task]
 async fn get_temperature(
     mut temp_sensor: DualTempSensor<I2c<'static, embassy_stm32::mode::Async>>,
@@ -204,9 +212,10 @@ async fn get_temperature(
     }
 }
 
+/// Task to manage alarm timers and send alarm state changes to the logger.
 #[embassy_executor::task]
 async fn alarm_timeouts(
-    alarm_receiver: embassy_sync::channel::Receiver<'static, ThreadModeRawMutex, AlarmTrigger, 8>,
+    alarm_receiver: embassy_sync::channel::Receiver<'static, ThreadModeRawMutex, AlarmTimerTrigger, 8>,
     event_sender: Sender<'static, ThreadModeRawMutex, LoggerEvent, 8>,
 ) {
     let mut alarm_state = AlarmTimerState::new();
@@ -265,7 +274,7 @@ async fn alarm_timeouts(
         if alarm_state.door_active && now >= alarm_state.door_expires {
             info!("Door alarm timer expired");
             alarm_state.door_active = false;
-            event_sender.send(LoggerEvent::AlarmStateChange(AlarmTrigger::DoorOpenStart)).await;
+            event_sender.send(LoggerEvent::AlarmStateChange(logger::AlarmTimerExpired::Door)).await;
         }
         
         // Check if temperature alarm timer has expired
@@ -274,14 +283,14 @@ async fn alarm_timeouts(
                 if now >= alarm_state.temperature_expires {
                     info!("Low temperature alarm timer expired");
                     alarm_state.temperature_active = TempTimerActive::NoneActive;
-                    event_sender.send(LoggerEvent::AlarmStateChange(AlarmTrigger::LowTemperatureStart)).await;
+                    event_sender.send(LoggerEvent::AlarmStateChange(logger::AlarmTimerExpired::LowTemperature)).await;
                 }
             }
             TempTimerActive::HighTemperature => {
                 if now >= alarm_state.temperature_expires {
                     info!("High temperature alarm timer expired");
                     alarm_state.temperature_active = TempTimerActive::NoneActive;
-                    event_sender.send(LoggerEvent::AlarmStateChange(AlarmTrigger::HighTemperatureStart)).await;
+                    event_sender.send(LoggerEvent::AlarmStateChange(logger::AlarmTimerExpired::HighTemperature)).await;
                 }
             }
             TempTimerActive::NoneActive => {}

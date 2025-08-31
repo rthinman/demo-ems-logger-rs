@@ -122,3 +122,205 @@ impl Temperatures {
         self.new_low_alarm = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logger::TemperatureSample;
+
+    #[test]
+    fn test_initial_state() {
+        let temps = Temperatures::new();
+        assert_eq!(temps.status, TemperatureState::Safe);
+        assert!(!temps.is_high_alarm());
+        assert!(!temps.is_low_alarm());
+    }
+
+    #[test]
+    fn test_safe_to_hot_transition() {
+        let mut temps = Temperatures::new();
+        let sample = TemperatureSample { vaccine: Some(8.5), ambient: None };
+        
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::HighTemperatureStart);
+        assert_eq!(temps.status, TemperatureState::HotNoAlarm);
+    }
+
+    #[test]
+    fn test_safe_to_freeze_transition() {
+        let mut temps = Temperatures::new();
+        let sample = TemperatureSample { vaccine: Some(-1.0), ambient: None };
+        
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::LowTemperatureStart);
+        assert_eq!(temps.status, TemperatureState::FreezeNoAlarm);
+    }
+
+    #[test]
+    fn test_hot_to_safe_with_hysteresis() {
+        let mut temps = Temperatures::new();
+        temps.status = TemperatureState::HotNoAlarm;
+        
+        // Temperature drops below high threshold minus hysteresis
+        let sample = TemperatureSample { vaccine: Some(7.8), ambient: None };
+        
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::TemperatureCancel);
+        assert_eq!(temps.status, TemperatureState::Safe);
+    }
+
+    #[test]
+    fn test_freeze_to_safe_with_hysteresis() {
+        let mut temps = Temperatures::new();
+        temps.status = TemperatureState::FreezeNoAlarm;
+        
+        // Temperature rises above low threshold plus hysteresis
+        let sample = TemperatureSample { vaccine: Some(-0.3), ambient: None };
+        
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::TemperatureCancel);
+        assert_eq!(temps.status, TemperatureState::Safe);
+    }
+
+    #[test]
+    fn test_hot_to_freeze_direct_transition() {
+        let mut temps = Temperatures::new();
+        temps.status = TemperatureState::HotNoAlarm;
+        
+        // Temperature drops directly to freeze level
+        let sample = TemperatureSample { vaccine: Some(-1.0), ambient: None };
+        
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::LowTemperatureStart);
+        assert_eq!(temps.status, TemperatureState::FreezeNoAlarm);
+    }
+
+    #[test]
+    fn test_freeze_to_hot_direct_transition() {
+        let mut temps = Temperatures::new();
+        temps.status = TemperatureState::FreezeNoAlarm;
+        
+        // Temperature rises directly to hot level
+        let sample = TemperatureSample { vaccine: Some(8.5), ambient: None };
+        
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::HighTemperatureStart);
+        assert_eq!(temps.status, TemperatureState::HotNoAlarm);
+    }
+
+    #[test]
+    fn test_alarm_expiration_high_temp() {
+        let mut temps = Temperatures::new();
+        temps.status = TemperatureState::HotNoAlarm;
+        
+        temps.alarm_expired(AlarmTimerExpired::HighTemperature);
+        
+        assert_eq!(temps.status, TemperatureState::HotAlarm);
+        assert!(temps.is_high_alarm());
+        assert!(!temps.is_low_alarm());
+    }
+
+    #[test]
+    fn test_alarm_expiration_low_temp() {
+        let mut temps = Temperatures::new();
+        temps.status = TemperatureState::FreezeNoAlarm;
+        
+        temps.alarm_expired(AlarmTimerExpired::LowTemperature);
+        
+        assert_eq!(temps.status, TemperatureState::FreezeAlarm);
+        assert!(temps.is_low_alarm());
+        assert!(!temps.is_high_alarm());
+    }
+
+    #[test]
+    fn test_new_alarm_flags() {
+        let mut temps = Temperatures::new();
+        
+        // Trigger and resolve a high alarm quickly
+        temps.alarm_expired(AlarmTimerExpired::HighTemperature);
+        assert!(temps.is_high_alarm());
+        
+        // Return to safe, but new_high_alarm flag should still be set
+        temps.status = TemperatureState::Safe;
+        assert!(temps.is_high_alarm()); // Still true due to new_high_alarm flag
+        
+        // Clear flags
+        temps.clear_new_alarms();
+        assert!(!temps.is_high_alarm());
+    }
+
+    #[test]
+    fn test_no_vaccine_temperature() {
+        let mut temps = Temperatures::new();
+        let sample = TemperatureSample { vaccine: None, ambient: Some(25.0) };
+        
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::NoTrigger);
+        assert_eq!(temps.status, TemperatureState::Safe);
+    }
+
+    #[test]
+    fn test_stay_in_hot_state() {
+        let mut temps = Temperatures::new();
+        temps.status = TemperatureState::HotNoAlarm;
+        
+        // Temperature stays hot but not extreme
+        let sample = TemperatureSample { vaccine: Some(8.2), ambient: None };
+        
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::NoTrigger);
+        assert_eq!(temps.status, TemperatureState::HotNoAlarm);
+    }
+
+    #[test]
+    fn test_stay_in_freeze_state() {
+        let mut temps = Temperatures::new();
+        temps.status = TemperatureState::FreezeNoAlarm;
+        
+        // Temperature stays freezing
+        let sample = TemperatureSample { vaccine: Some(-0.7), ambient: None };
+        
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::NoTrigger);
+        assert_eq!(temps.status, TemperatureState::FreezeNoAlarm);
+    }
+
+    #[test]
+    fn test_hysteresis_boundary_conditions() {
+        let mut temps = Temperatures::new();
+        
+        // Test exact hysteresis boundary for hot to safe
+        // Exactly at the boundary should not cancel.
+        temps.status = TemperatureState::HotAlarm;
+        let sample = TemperatureSample { vaccine: Some(ALARM_HIGH_TEMPERATURE - ALARM_TEMP_HYSTERESIS), ambient: None };
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::NoTrigger);
+        assert_eq!(temps.status, TemperatureState::HotAlarm);
+        
+        // Test exact hysteresis boundary for hot to safe
+        // Just below the boundary should cancel.
+        temps.status = TemperatureState::HotAlarm;
+        let sample = TemperatureSample { vaccine: Some(ALARM_HIGH_TEMPERATURE - ALARM_TEMP_HYSTERESIS - 0.05), ambient: None };
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::TemperatureCancel);
+        assert_eq!(temps.status, TemperatureState::Safe);
+        
+        // Test exact hysteresis boundary for freeze to safe
+        // Just at the boundary should not cancel.
+        temps.status = TemperatureState::FreezeAlarm;
+        let sample = TemperatureSample { vaccine: Some(ALARM_LOW_TEMPERATURE + ALARM_TEMP_HYSTERESIS), ambient: None };
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::NoTrigger);
+        assert_eq!(temps.status, TemperatureState::FreezeAlarm);
+
+        // Test exact hysteresis boundary for freeze to safe
+        // Just above the boundary should cancel.
+        temps.status = TemperatureState::FreezeAlarm;
+        let sample = TemperatureSample { vaccine: Some(ALARM_LOW_TEMPERATURE + ALARM_TEMP_HYSTERESIS + 0.05), ambient: None };
+        let trigger = temps.new_temperatures(sample);
+        assert_eq!(trigger, AlarmTimerTrigger::TemperatureCancel);
+        assert_eq!(temps.status, TemperatureState::Safe);
+
+    }
+}
+

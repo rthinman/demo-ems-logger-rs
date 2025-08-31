@@ -65,29 +65,16 @@ impl Logger {
                 let ready = self.agg.new_temperatures(sample, ts);
 
                 // Update temperature state machine and determine if we need to start/cancel an alarm timer.
-                let trigger = self.temps.new_temperatures(sample, ts)?;
+                let trigger = self.temps.new_temperatures(sample);
 
                 if trigger == AlarmTimerTrigger::TemperatureCancel {
                     self.agg.cancel_temperature_alarms();
                 }
 
-                // TODO: check for temperature alarms. logger.c check_for_alarms()
-                // TODO: If samples buffer is full, write to a file. log_sample()
+                // TODO: If samples buffer is full, write to a file. logger.c log_sample()
                 // TODO: Populate an entry in the samples buffer. log_sample()
                 // 
 
-                // // Placeholder for "this sample" temperature code.
-                // let t = if let Some(vax) = sample.vaccine {
-                //     if vax < 2.0 {
-                //         AlarmTrigger::LowTemperatureStart
-                //     } else if vax > 8.0 {
-                //         AlarmTrigger::HighTemperatureStart
-                //     } else {
-                //         AlarmTrigger::TemperatureCancel
-                //     }
-                // } else {
-                //     AlarmTrigger::NoTrigger
-                // };
                 (ready, trigger)
             }
             LoggerEvent::DoorEvent(door_event) => {

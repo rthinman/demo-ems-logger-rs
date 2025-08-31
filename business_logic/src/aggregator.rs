@@ -98,7 +98,7 @@ impl Aggregator {
             if let Some(last_vaccine_temp) = self.last_vaccine_temp {
                 let vaccine_time = now.seconds - last_vaccine_ts.seconds;
                 
-                if last_vaccine_temp > MAX_GOOD_VACCINE_TEMP {
+                if last_vaccine_temp >= MAX_GOOD_VACCINE_TEMP {
                     self.long_record.tvc_high_seconds += vaccine_time;
                 }
                 if last_vaccine_temp < MIN_GOOD_VACCINE_TEMP {
@@ -148,6 +148,7 @@ impl Aggregator {
     }
 
     pub fn process_door_event(&mut self, door: DoorEvent, now: Timestamp) -> AlarmTimerTrigger {
+        // TODO: let record_ready = check_for_end_of_record(now); and return instead of the trigger (trigger handled by door state machine).
         match door {
             DoorEvent::Opened => {
                 if self.door_open_start.is_none() {

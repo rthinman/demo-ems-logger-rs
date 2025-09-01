@@ -156,22 +156,42 @@ impl Aggregator {
         record_ready
     }
 
-    pub fn door_event(&mut self, door: DoorEvent, now: Timestamp) -> bool {
+    pub fn door_event(&mut self, action: DoorEvent, now: Timestamp) -> bool {
         // Check if we need to end the current record, and save it.
         let record_ready = self.check_for_end_of_record(now);
 
-        match door {
+        match action {
             DoorEvent::Opened => {
-                if self.door_open_start.is_none() {
-                    self.door_open_start = Some(now);
+                match self.door_open_start {
+                    Some(door_open_start) => {
+                        // Door was already open; this might be a glitch, but assume door open the whole time.
+                        let open_duration = now.seconds - door_open_start.seconds;
+                        self.active_record.vaccine_door_seconds += open_duration;
+                        self.door_open_start = Some(now);
+                        if let Some(door_alarm_ts) = self.door_alarm_ts {
+                            let additional_alarm_duration = now.seconds - door_alarm_ts.seconds;
+                            self.active_record.door_alarm_seconds += additional_alarm_duration;
+                            self.door_alarm_ts = Some(now);
+                        }
+                    },
+                    None => {
+                        self.door_open_start = Some(now);
+                        // Only accumulate door open count if door was previously closed.
+                        self.active_record.vaccine_door_count += 1;
+
+                    },
                 }
-                self.active_record.vaccine_door_count += 1;
-            }
+            },
             DoorEvent::Closed => {
                 if let Some(open_time) = self.door_open_start {
                     let open_duration = now.seconds - open_time.seconds;
                     self.active_record.vaccine_door_seconds += open_duration;
                     self.door_open_start = None;
+                }
+                if let Some(door_alarm_ts) = self.door_alarm_ts {
+                    let additional_alarm_duration = now.seconds - door_alarm_ts.seconds;
+                    self.active_record.door_alarm_seconds += additional_alarm_duration;
+                    self.door_alarm_ts = None;
                 }
             }
         }
@@ -809,4 +829,245 @@ mod tests {
         assert!(agg.prev_record.tvc_sum > 0.0);
         assert!(agg.prev_record.tamb_sum > 0.0);
     }
+
+    // Tests for door event functionality
+    
+    #[test]
+    fn test_aggregator_initialization_door_closed() {
+        let now = Timestamp { seconds: 1000 };
+        let agg = Aggregator::new(false, now);
+        
+        assert_eq!(agg.door_open_start, None);
+        assert_eq!(agg.active_record.vaccine_door_count, 0);
+        assert_eq!(agg.active_record.vaccine_door_seconds, 0);
+    }
+
+    #[test]
+    fn test_aggregator_initialization_door_open() {
+        let now = Timestamp { seconds: 1000 };
+        let agg = Aggregator::new(true, now);
+        
+        assert_eq!(agg.door_open_start, Some(now));
+        assert_eq!(agg.active_record.vaccine_door_count, 1);
+        assert_eq!(agg.active_record.vaccine_door_seconds, 0);
+    }
+
+    #[test]
+    fn test_door_open_event() {
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
+        
+        let ready = agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1100 });
+        
+        assert!(!ready); // Should not trigger record end
+        assert_eq!(agg.door_open_start, Some(Timestamp { seconds: 1100 }));
+        assert_eq!(agg.active_record.vaccine_door_count, 1);
+        assert_eq!(agg.active_record.vaccine_door_seconds, 0);
+    }
+
+    #[test]
+    fn test_door_close_event_accumulates_time() {
+        let mut agg = Aggregator::new(true, Timestamp { seconds: 1000 });
+        
+        // Close door after 300 seconds
+        let ready = agg.door_event(DoorEvent::Closed, Timestamp { seconds: 1300 });
+        
+        assert!(!ready);
+        assert_eq!(agg.door_open_start, None);
+        assert_eq!(agg.active_record.vaccine_door_count, 1); // From initialization
+        assert_eq!(agg.active_record.vaccine_door_seconds, 300);
+    }
+
+    #[test]
+    fn test_multiple_door_open_close_cycles() {
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
+        
+        // First open
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1100 });
+        assert_eq!(agg.active_record.vaccine_door_count, 1);
+        
+        // First close after 120 seconds
+        agg.door_event(DoorEvent::Closed, Timestamp { seconds: 1220 });
+        assert_eq!(agg.active_record.vaccine_door_seconds, 120);
+        
+        // Second open
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1300 });
+        assert_eq!(agg.active_record.vaccine_door_count, 2);
+        
+        // Second close after 80 seconds
+        agg.door_event(DoorEvent::Closed, Timestamp { seconds: 1380 });
+        assert_eq!(agg.active_record.vaccine_door_seconds, 200); // 120 + 80
+    }
+
+    #[test]
+    fn test_door_close_when_already_closed() {
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
+        
+        // Try to close already closed door
+        agg.door_event(DoorEvent::Closed, Timestamp { seconds: 1100 });
+        
+        assert_eq!(agg.door_open_start, None);
+        assert_eq!(agg.active_record.vaccine_door_count, 0);
+        assert_eq!(agg.active_record.vaccine_door_seconds, 0);
+    }
+
+    #[test]
+    fn test_door_alarm_tracking() {
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
+        
+        // Open door first
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1100 });
+        
+        // Then door alarm expires
+        agg.alarm_expired(AlarmTimerExpired::Door, Timestamp { seconds: 1200 });
+        assert_eq!(agg.door_alarm_ts, Some(Timestamp { seconds: 1200 }));
+        
+        // Process another door event to accumulate alarm time
+        agg.door_event(DoorEvent::Closed, Timestamp { seconds: 1260 });
+        
+        assert_eq!(agg.active_record.door_alarm_seconds, 60); // 60 seconds of alarm
+        assert_eq!(agg.door_alarm_ts, None);
+    }
+
+    #[test]
+    fn test_door_alarm_accumulation_over_time() {
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
+        
+        // Open door first
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1100 });
+        
+        // Door alarm expires
+        agg.alarm_expired(AlarmTimerExpired::Door, Timestamp { seconds: 1150 });
+        
+        // Multiple events to accumulate alarm time
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1200 }); // Another open (count increment)
+        assert_eq!(agg.active_record.door_alarm_seconds, 50);
+        
+        agg.door_event(DoorEvent::Closed, Timestamp { seconds: 1270 });
+        assert_eq!(agg.active_record.door_alarm_seconds, 120); // 50 + 70
+    }
+
+    #[test]
+    fn test_cancel_door_alarm() {
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
+        
+        // Set up door alarm
+        agg.door_alarm_ts = Some(Timestamp { seconds: 1100 });
+        
+        agg.cancel_door_alarm();
+        
+        assert_eq!(agg.door_alarm_ts, None);
+    }
+
+    #[test]
+    fn test_door_event_triggers_record_end() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(false, start_time);
+        let record_end = agg.next_record_start;
+        
+        // Door event at record end should trigger rollover
+        let ready = agg.door_event(DoorEvent::Opened, record_end);
+        
+        assert!(ready);
+    }
+
+    #[test]
+    fn test_alarm_expired_door_triggers_record_end() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(false, start_time);
+        let record_end = agg.next_record_start;
+        
+        // Door alarm at record end should trigger rollover
+        let ready = agg.alarm_expired(AlarmTimerExpired::Door, record_end);
+        
+        assert!(ready);
+    }
+
+    #[test]
+    fn test_door_open_finalization_at_record_end() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(true, start_time); // Door open at start
+        let record_end = agg.next_record_start;
+        
+        // Trigger record end
+        agg.check_for_end_of_record(record_end);
+        
+        // Door should have accumulated full record time
+        let expected_duration = record_end.seconds - start_time.seconds;
+        assert_eq!(agg.prev_record.vaccine_door_seconds, expected_duration);
+        
+        // Door should still be tracked as open in new record
+        assert_eq!(agg.door_open_start, Some(record_end));
+    }
+
+    #[test]
+    fn test_door_alarm_finalization_at_record_end() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(false, start_time);
+        let record_end = agg.next_record_start;
+        
+        // Open door first
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: start_time.seconds + 500 });
+        
+        // Start door alarm partway through record
+        let alarm_start = Timestamp { seconds: start_time.seconds + 1000 };
+        agg.door_alarm_ts = Some(alarm_start);
+        
+        agg.check_for_end_of_record(record_end);
+        
+        // Should accumulate alarm time to record end
+        let expected_alarm_time = record_end.seconds - alarm_start.seconds;
+        assert_eq!(agg.prev_record.door_alarm_seconds, expected_alarm_time);
+        
+        // Alarm should continue in new record
+        assert_eq!(agg.door_alarm_ts, Some(record_end));
+    }
+
+    #[test]
+    fn test_door_events_with_mixed_operations() {
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
+        
+        // Open door
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1100 });
+        
+        // Door alarm expires while open
+        agg.alarm_expired(AlarmTimerExpired::Door, Timestamp { seconds: 1200 });
+        
+        // Process another door event to accumulate alarm time
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1250 }); // Already open, should not increment count
+        
+        assert_eq!(agg.active_record.vaccine_door_count, 1); // Only the first open counts.
+        assert_eq!(agg.active_record.door_alarm_seconds, 50); // 50 seconds of alarm
+        
+        // Close door
+        agg.door_event(DoorEvent::Closed, Timestamp { seconds: 1350 });
+        
+        assert_eq!(agg.active_record.vaccine_door_seconds, 250); // 1350 - 1100
+        assert_eq!(agg.active_record.door_alarm_seconds, 150); // Additional 100 seconds
+    }
+
+    #[test]
+    fn test_door_alarm_state_changes() {
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
+        
+        // Open door first
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1100 });
+        
+        // Door alarm expires
+        agg.alarm_expired(AlarmTimerExpired::Door, Timestamp { seconds: 1150 });
+        
+        // Accumulate some alarm time
+        agg.door_event(DoorEvent::Closed, Timestamp { seconds: 1230 });
+        
+        // Cancel door alarm
+        agg.cancel_door_alarm();
+        
+        // Open again - no more alarm accumulation
+        agg.door_event(DoorEvent::Opened, Timestamp { seconds: 1250 });
+        agg.door_event(DoorEvent::Closed, Timestamp { seconds: 1300 });
+        
+        assert_eq!(agg.active_record.door_alarm_seconds, 80); // Only before cancel
+        assert_eq!(agg.door_alarm_ts, None);
+    }
+
+
 }

@@ -79,6 +79,7 @@ name = "business_logic"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "bitflags 2.9.1",
  "embedded-hal-async",
 ]
 

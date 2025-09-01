@@ -318,7 +318,9 @@ mod tests {
         assert_eq!(agg.timestamp, now);
         assert_eq!(agg.last_ambient_temp, None);
         assert_eq!(agg.last_vaccine_temp, None);
-        assert_eq!(agg.active_record, AggregationRecord::default());
+        assert_eq!(agg.active_record.record_start, now);
+        assert_eq!(agg.active_record.tvc_sum, 0.0);
+        assert_eq!(agg.active_record.tamb_sum, 0.0);
     }
 
     #[test]
@@ -659,5 +661,143 @@ mod tests {
         // Ambient should accumulate for all intervals
         assert_eq!(agg.active_record.tamb_sum, 60.0 * 20.0 + 60.0 * 21.0 + 60.0 * 22.0);
         assert_eq!(agg.active_record.tamb_seconds, 180);
+    }
+
+    // Tests for check_for_end_of_record() method
+    
+    #[test]
+    fn test_check_for_end_of_record_not_ready() {
+        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        
+        // Time before next_record_start should return false
+        let before_end = Timestamp { seconds: agg.next_record_start.seconds - 100 };
+        let result = agg.check_for_end_of_record(before_end);
+        
+        assert!(!result);
+        // State should be unchanged
+        assert_eq!(agg.timestamp, Timestamp { seconds: 1000 });
+    }
+
+    #[test]
+    fn test_check_for_end_of_record_finalizes_to_record_end() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(start_time);
+        let record_end = agg.next_record_start;
+        
+        // Set up temperatures that started before record end
+        agg.last_vaccine_temp = Some(6.0);
+        agg.last_vaccine_ts = Some(Timestamp { seconds: record_end.seconds - 300 });
+        agg.last_ambient_temp = Some(22.0);
+        agg.last_ambient_ts = Some(Timestamp { seconds: record_end.seconds - 200 });
+        
+        // Trigger at exact record end time
+        let result = agg.check_for_end_of_record(record_end);
+        
+        assert!(result);
+        // Should accumulate temps to exact record end, not current timestamp
+        assert_eq!(agg.prev_record.tvc_sum, 300.0 * 6.0); // 300 seconds to record end
+        assert_eq!(agg.prev_record.tamb_sum, 200.0 * 22.0); // 200 seconds to record end
+    }
+
+    #[test]
+    fn test_end_of_record_finalizes_alarm_times_to_record_end() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(start_time);
+        let record_end = agg.next_record_start;
+        
+        // Set up active alarms before record end
+        agg.high_alarm_ts = Some(Timestamp { seconds: record_end.seconds - 500 });
+        agg.low_alarm_ts = Some(Timestamp { seconds: record_end.seconds - 300 });
+        
+        agg.check_for_end_of_record(record_end);
+        
+        // Should accumulate alarm time to exact record end
+        assert_eq!(agg.prev_record.high_alarm_seconds, 500);
+        assert_eq!(agg.prev_record.low_alarm_seconds, 300);
+        
+        // Alarm timestamps should be updated to new record start
+        assert_eq!(agg.high_alarm_ts, Some(record_end));
+        assert_eq!(agg.low_alarm_ts, Some(record_end));
+    }
+
+    #[test]
+    fn test_end_of_record_with_high_low_temperature_finalization() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(start_time);
+        let record_end = agg.next_record_start;
+        
+        // High temperature active until record end
+        agg.last_vaccine_temp = Some(9.0);
+        agg.last_vaccine_ts = Some(Timestamp { seconds: record_end.seconds - 600 });
+        agg.active_record.tvc_high_seconds = 100; // Already accumulated time
+        
+        agg.check_for_end_of_record(record_end);
+        
+        // Should add final 600 seconds of high temp time
+        assert_eq!(agg.prev_record.tvc_high_seconds, 700); // 100 + 600
+        
+        // Test low temperature finalization
+        let mut agg2 = Aggregator::new(start_time);
+        agg2.last_vaccine_temp = Some(1.0);
+        agg2.last_vaccine_ts = Some(Timestamp { seconds: record_end.seconds - 400 });
+        agg2.active_record.tvc_low_seconds = 200;
+        
+        agg2.check_for_end_of_record(record_end);
+        
+        assert_eq!(agg2.prev_record.tvc_low_seconds, 600); // 200 + 400
+    }
+
+    #[test]
+    fn test_record_length_calculation() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(start_time);
+        let record_end = agg.next_record_start;
+        
+        agg.check_for_end_of_record(record_end);
+        
+        let expected_length = (record_end.seconds - start_time.seconds) as u16;
+        assert_eq!(agg.prev_record.record_length_seconds, expected_length);
+        assert_eq!(agg.prev_record.record_start, start_time);
+    }
+
+    #[test]
+    fn test_new_record_initialization_after_rollover() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(start_time);
+        let first_end = agg.next_record_start;
+        let second_end = first_end.get_next_aggregation_start();
+        
+        // Add some data to first record
+        agg.active_record.tvc_sum = 500.0;
+        agg.active_record.tamb_sum = 300.0;
+        
+        agg.check_for_end_of_record(first_end);
+        
+        // New record should be properly initialized
+        assert_eq!(agg.active_record.record_start, first_end);
+        assert_eq!(agg.next_record_start, second_end);
+        assert_eq!(agg.timestamp, first_end);
+        assert_eq!(agg.active_record.tvc_sum, 0.0);
+        assert_eq!(agg.active_record.tamb_sum, 0.0);
+        assert_eq!(agg.active_record.tvc_seconds, 0);
+        assert_eq!(agg.active_record.tamb_seconds, 0);
+    }
+
+    #[test]
+    fn test_end_of_record_triggered_by_new_temperatures() {
+        let start_time = Timestamp { seconds: 1000 };
+        let mut agg = Aggregator::new(start_time);
+        let record_end = agg.next_record_start;
+        
+        // Add temperature before record end
+        agg.new_temperatures(create_temp_sample(Some(5.0), Some(20.0)), Timestamp { seconds: 1500 });
+        
+        // Process sample at record end time - should trigger rollover
+        let ready = agg.new_temperatures(create_temp_sample(Some(6.0), Some(21.0)), record_end);
+        
+        assert!(ready);
+        // Previous record should contain the accumulated data
+        assert!(agg.prev_record.tvc_sum > 0.0);
+        assert!(agg.prev_record.tamb_sum > 0.0);
     }
 }

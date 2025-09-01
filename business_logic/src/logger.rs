@@ -58,30 +58,34 @@ struct DataEntry {
     // cmpr: u16, // Compressor run time this sample in seconds.
     // cmps: u16, // Compressor maximum speed this sample in RPM.
     // sva: u16, // Supply voltage availability in seconds this sample.
-    dorv: u16, // Door open time this sample in seconds.
-    dorc: u16, // Door open count this sample.
+    dorv: u32, // Number of seconds the door has been open this sample.
+    dorc: u16, // Number of door opening events this sample.
     alrm: AlarmFlags, // Bitfield of active alarms
 }
 
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Logger {
+    rtcw: Timestamp, // Last known RTC value when awoken.
     agg: Aggregator,
-    temps: Temperatures, 
+    temps: Temperatures,
+    door: door::Door,
     log_buffer: ArrayVec<DataEntry, LOG_BUFFER_SIZE>,
 }
 
 impl Logger {
-    pub fn new(now: Timestamp) -> Self {
+    pub fn new(now: Timestamp, rtcw: Timestamp, door_open: bool) -> Self {
         Self {
-            agg: Aggregator::new(now),
+            rtcw,
+            agg: Aggregator::new(now, door_open),
             temps: Temperatures::new(),
+            door: door::Door::new(now, door_open), // Assume door is closed at startup. TODO: read actual state from GPIO.
             log_buffer: ArrayVec::new(),
         }
     }
 
     // TODO: do we need to return Result<> here? Where is the best place to protect against out of order timestamps?
-    pub fn process_event(&mut self, event: LoggerEvent, ts: Timestamp) -> Result<AlarmTimerTrigger, TimestampError> {
+    pub fn process_event(&mut self, event: LoggerEvent, now: Timestamp) -> Result<AlarmTimerTrigger, TimestampError> {
 
         // Process the event and store 
         // 1. whether we have an 8h data aggregation ready to write to flash,
@@ -91,7 +95,7 @@ impl Logger {
 
                 // Update aggregation with new sample. Do this before calling cancel_temperature_alarms()
                 // so that a record can be finalized if necessary.
-                let ready = self.agg.new_temperatures(sample, ts);
+                let ready = self.agg.new_temperatures(sample, now);
 
                 // Update temperature state machine and determine if we need to start/cancel an alarm timer.
                 let trigger = self.temps.new_temperatures(sample);
@@ -101,6 +105,8 @@ impl Logger {
                 }
 
                 // Add sample to buffer
+
+                // Determine active alarms.
                 let mut alarm_flags = AlarmFlags::empty();
                 if self.temps.is_high_alarm() {
                     alarm_flags |= AlarmFlags::HIGH_TEMP;
@@ -108,20 +114,20 @@ impl Logger {
                 if self.temps.is_low_alarm() {
                     alarm_flags |= AlarmFlags::LOW_TEMP;
                 }
+                if self.door.is_alarm() {
+                    alarm_flags |= AlarmFlags::DOOR_OPEN;
+                }
 
-
-                // TODO: add door alarm check, including new alarm flag clearing below.
+                // Get sample values from accumulators.
+                let (dorc, dorv, idrv) = self.door.get_values(now);
                 
-                // Clear new alarm flags.
-                self.temps.clear_new_alarms();
-
                 let entry = DataEntry {
-                    relt: ts, // TODO: convert to relative time
-                    rtcw: ts, // TODO: get actual RTCW
+                    relt: now,
+                    rtcw: self.rtcw,
                     tvc: sample.vaccine,
                     tamb: sample.ambient,
-                    dorv: 0, // TODO: get from aggregator
-                    dorc: 0, // TODO: get from aggregator
+                    dorv,
+                    dorc,
                     alrm: alarm_flags,
                 };
                 
@@ -131,18 +137,22 @@ impl Logger {
                 }
                 self.log_buffer.push(entry);
 
+                // Clear sample alarms and counts to prepare for the next sample.
+                self.temps.clear_new_alarms();
+                self.door.reset_accumulators();
+
                 (ready, trigger)
             }
             LoggerEvent::DoorEvent(door_event) => {
-                self.agg.process_door_event(door_event, ts);
+                // Update aggregation with new sample. Do this before calling cancel_door_alarm()
+                // so that a record can be finalized if necessary.
+                let ready = self.agg.process_door_event(door_event, now);
+                let trigger = self.door.process_door_event(door_event, now);
+                if trigger == AlarmTimerTrigger::DoorOpenCancel {
+                    self.agg.cancel_door_alarm();
+                }
 
-                // Placeholder.
-                let t = if door_event == door::DoorEvent::Opened {
-                    AlarmTimerTrigger::DoorOpenStart
-                } else {
-                    AlarmTimerTrigger::DoorOpenCancel
-                };
-                (false, t)
+                (ready, trigger)
             }
             // LoggerEvent::PowerEvent(power_event) => {
             //     self.agg.process_power_event(power_event, ts);
@@ -152,7 +162,7 @@ impl Logger {
             // }
             LoggerEvent::AlarmStateChange(state) => {
                 // Placeholder.
-                let ready = self.agg.alarm_expired(state, ts);
+                let ready = self.agg.alarm_expired(state, now);
                 match state {
                     AlarmTimerExpired::HighTemperature | AlarmTimerExpired::LowTemperature => {
                         self.temps.alarm_expired(state);

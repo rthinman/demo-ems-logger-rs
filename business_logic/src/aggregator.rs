@@ -29,9 +29,8 @@ pub struct AggregationRecord {
     pub records_read: u8, // Only used when combining records into a single day.  The number of records of combined data.
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Aggregator {
-    // status: AlarmState,
     timestamp: Timestamp, // TODO: use?  I think it is The timestamp of the last sample received.
     next_record_start: Timestamp, // Timestamp when the next record should start.
     last_ambient_temp: Option<f32>, // The last good ambient temperature received.
@@ -50,10 +49,17 @@ pub struct Aggregator {
 }
 
 impl Aggregator {
-    pub fn new(now: Timestamp) -> Self {
+    pub fn new(now: Timestamp, door_open: bool) -> Self {
         let next_record_start = now.get_next_aggregation_start();
         let mut active_record = AggregationRecord::default();
         active_record.record_start = now;
+
+        let door_open_start = if door_open {
+            active_record.vaccine_door_count = 1;
+            Some(now)
+        } else {
+            None
+        };
 
         Self {
             // status: AlarmState::Normal,
@@ -66,7 +72,7 @@ impl Aggregator {
             low_alarm_ts: None,
             high_alarm_ts: None,
             door_alarm_ts: None,
-            door_open_start: None,
+            door_open_start: door_open_start,
             power_on_start: None,
             compressor_on_start: None,
             active_record,
@@ -77,7 +83,7 @@ impl Aggregator {
     /// Process new temperature samples and update the aggregation record.
     /// Returns true if the current aggregation record is complete and should be saved.
     pub fn new_temperatures(&mut self, temps: TemperatureSample, now: Timestamp) -> bool {
-        
+        // Check if we need to end the current record, and save it.
         let record_ready = self.check_for_end_of_record(now);
         
         // Update the average ambient temperature
@@ -151,32 +157,33 @@ impl Aggregator {
         record_ready
     }
 
-    pub fn process_door_event(&mut self, door: DoorEvent, now: Timestamp) -> AlarmTimerTrigger {
-        // TODO: let record_ready = check_for_end_of_record(now); and return instead of the trigger (trigger handled by door state machine).
+    pub fn process_door_event(&mut self, door: DoorEvent, now: Timestamp) -> bool {
+        // Check if we need to end the current record, and save it.
+        let record_ready = self.check_for_end_of_record(now);
+
         match door {
             DoorEvent::Opened => {
                 if self.door_open_start.is_none() {
                     self.door_open_start = Some(now);
-                    return AlarmTimerTrigger::DoorOpenStart;
                 }
+                self.active_record.vaccine_door_count += 1;
             }
             DoorEvent::Closed => {
                 if let Some(open_time) = self.door_open_start {
                     let open_duration = now.seconds - open_time.seconds; // TODO: check logic.
                     self.active_record.vaccine_door_seconds += open_duration;
                     self.door_open_start = None;
-                    return AlarmTimerTrigger::DoorOpenCancel;
                 }
             }
         }
-        AlarmTimerTrigger::NoTrigger
 
+        record_ready
     }
 
     /// Update the aggragation state if an alarm timer has expired, signaling that an alarm is now active.
     /// Returns true if the current aggregation record is complete and should be saved.
     pub fn alarm_expired(&mut self, state: AlarmTimerExpired, now: Timestamp) -> bool {
-        // This is a combination of BINARY_temp_alarm_state_change() and BINARY_door_alarm_state_change().
+        // This function is a combination of BINARY_temp_alarm_state_change() and BINARY_door_alarm_state_change() in the C code
         let record_ready = self.check_for_end_of_record(now);
 
         // Update the alarm aggregate times
@@ -203,12 +210,8 @@ impl Aggregator {
                 self.low_alarm_ts = None; // Clear low alarm if high alarm starts.
             }
             AlarmTimerExpired::Door => {
-                self.door_open_start = Some(now);
+                self.door_alarm_ts = Some(now);
             }
-            // AlarmTimerExpired::Door => {
-            //     self.door_open_start = None;
-            // }
-            // _ => {}
         }
 
         record_ready
@@ -222,11 +225,18 @@ impl Aggregator {
         self.low_alarm_ts = None;
     }
 
+    /// Cancel any ongoing temperature alarms.
+    /// Only call this after calling process_door_event() to update the aggregation
+    /// record, so that we don't have to update the alarm times here.
+    pub fn cancel_door_alarm(&mut self) {
+        self.door_alarm_ts = None;
+    }
+
     // Private methods --------------------------
 
     /// Check if the current time indicates the end of the current aggregation record.
     fn check_for_end_of_record(&mut self, now: Timestamp) -> bool {
-        // TODO: do we need to handle the reset clearing all data, as in the C code?
+        // TODO: do we need to handle a reboot that clears all the data, as in the C code?
 
         // Not yet time to end the record; nothing to do.
         if now.seconds < self.next_record_start.seconds {

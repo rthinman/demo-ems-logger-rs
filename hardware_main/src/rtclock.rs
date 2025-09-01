@@ -49,8 +49,8 @@ impl Rtclock {
     }
 
     /// Get RTCWake, the value of RELT at the last "brownout" event.
-    pub fn get_rtcw(&self) -> u32 {
-        self.rtcw
+    pub fn get_rtcw(&self) -> Timestamp {
+        Timestamp { seconds: self.rtcw }
     }
 
     // Static methods for Rtclock

@@ -119,7 +119,12 @@ async fn main(spawner: Spawner) {
     );
     let mut temp_sensor = DualTempSensor::new(i2c, AMBIENT_ADDRESS, VACCINE_ADDRESS, pwrv_nen);
 
-    let mut logger = Logger::new(rt_clock.get_timestamp());
+    let door_open = btn.is_low();
+    let mut logger = Logger::new(rt_clock.get_timestamp(), rt_clock.get_rtcw(), door_open);
+    // Trigger the door alarm timer if the door is open at startup.
+    if door_open {
+        ALARM_CHANNEL.send(AlarmTimerTrigger::DoorOpenStart).await;
+    }
 
     // Spawn the tasks
     spawner.spawn(button(btn, EVENT_CHANNEL.sender())).unwrap();

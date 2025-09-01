@@ -183,3 +183,202 @@ impl Logger {
         Ok(trigger)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::door::DoorEvent;
+
+    fn create_temp_sample(vaccine: Option<f32>, ambient: Option<f32>) -> TemperatureSample {
+        TemperatureSample { vaccine, ambient }
+    }
+
+    #[test]
+    fn test_logger_initialization() {
+        let rtcw = Timestamp { seconds: 500 };
+        let now = Timestamp { seconds: 1000 };
+        let logger = Logger::new(rtcw, false, now);
+        
+        assert_eq!(logger.rtcw, rtcw);
+        assert_eq!(logger.log_buffer.len(), 0);
+        assert!(logger.log_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_temperature_sample_processing() {
+        let mut logger = Logger::new(Timestamp { seconds: 500 }, false, Timestamp { seconds: 1000 });
+        let sample = create_temp_sample(Some(5.0), Some(20.0));
+        
+        let trigger = logger.process_event(LoggerEvent::TemperatureSample(sample), Timestamp { seconds: 1000 });
+        
+        assert!(trigger.is_ok());
+        assert_eq!(logger.log_buffer.len(), 1);
+        
+        let entry = &logger.log_buffer[0];
+        assert_eq!(entry.tvc, Some(5.0));
+        assert_eq!(entry.tamb, Some(20.0));
+        assert_eq!(entry.relt, Timestamp { seconds: 1000 });
+        assert_eq!(entry.rtcw, Timestamp { seconds: 500 });
+        assert_eq!(entry.alrm, AlarmFlags::empty());
+    }
+
+    #[test]
+    fn test_door_event_processing() {
+        let mut logger = Logger::new(Timestamp { seconds: 500 }, false, Timestamp { seconds: 1000 });
+        
+        let trigger = logger.process_event(LoggerEvent::DoorEvent(DoorEvent::Opened), Timestamp { seconds: 1100 });
+        
+        assert!(trigger.is_ok());
+        assert_eq!(trigger.unwrap(), AlarmTimerTrigger::DoorOpenStart);
+    }
+
+    #[test]
+    fn test_door_values_in_log_entry() {
+        let mut logger = Logger::new(Timestamp { seconds: 500 }, false, Timestamp { seconds: 1000 });
+        
+        // Open door
+        logger.process_event(LoggerEvent::DoorEvent(DoorEvent::Opened), Timestamp { seconds: 1100 }).unwrap();
+        
+        // Close door after 200 seconds
+        logger.process_event(LoggerEvent::DoorEvent(DoorEvent::Closed), Timestamp { seconds: 1300 }).unwrap();
+        
+        // Process temperature sample to create log entry
+        let sample = create_temp_sample(Some(5.0), None);
+        logger.process_event(LoggerEvent::TemperatureSample(sample), Timestamp { seconds: 1350 }).unwrap();
+        
+        let entry = &logger.log_buffer[0];
+        assert_eq!(entry.dorc, 1); // One door open event
+        assert_eq!(entry.dorv, 200); // 200 seconds accumulated open time
+    }
+
+    #[test]
+    fn test_alarm_flags_population() {
+        let mut logger = Logger::new(Timestamp { seconds: 500 }, false, Timestamp { seconds: 1000 });
+        
+        // Trigger high temperature alarm
+        logger.process_event(LoggerEvent::AlarmStateChange(AlarmTimerExpired::HighTemperature), Timestamp { seconds: 1100 }).unwrap();
+        
+        // Process temperature sample to create log entry with alarm flag
+        let sample = create_temp_sample(Some(9.0), Some(25.0));
+        logger.process_event(LoggerEvent::TemperatureSample(sample), Timestamp { seconds: 1150 }).unwrap();
+        
+        assert_eq!(logger.log_buffer.len(), 1);
+        let entry = &logger.log_buffer[0];
+        assert!(entry.alrm.contains(AlarmFlags::HIGH_TEMP));
+        assert!(!entry.alrm.contains(AlarmFlags::LOW_TEMP));
+        assert!(!entry.alrm.contains(AlarmFlags::DOOR_OPEN));
+    }
+
+    #[test]
+    fn test_multiple_alarm_flags() {
+        let mut logger = Logger::new(Timestamp { seconds: 500 }, true, Timestamp { seconds: 1000 });
+        
+        // Trigger multiple alarms
+        logger.process_event(LoggerEvent::AlarmStateChange(AlarmTimerExpired::LowTemperature), Timestamp { seconds: 1100 }).unwrap();
+        logger.process_event(LoggerEvent::AlarmStateChange(AlarmTimerExpired::Door), Timestamp { seconds: 1150 }).unwrap();
+        
+        // Process temperature sample
+        let sample = create_temp_sample(Some(-1.0), Some(15.0));
+        logger.process_event(LoggerEvent::TemperatureSample(sample), Timestamp { seconds: 1200 }).unwrap();
+        
+        let entry = &logger.log_buffer[0];
+        assert!(entry.alrm.contains(AlarmFlags::LOW_TEMP));
+        assert!(entry.alrm.contains(AlarmFlags::DOOR_OPEN));
+        assert!(!entry.alrm.contains(AlarmFlags::HIGH_TEMP));
+    }
+
+    #[test]
+    fn test_door_accumulator_reset() {
+        let mut logger = Logger::new(Timestamp { seconds: 500 }, false, Timestamp { seconds: 1000 });
+        
+        // Open and close door
+        logger.process_event(LoggerEvent::DoorEvent(DoorEvent::Opened), Timestamp { seconds: 1100 }).unwrap();
+        logger.process_event(LoggerEvent::DoorEvent(DoorEvent::Closed), Timestamp { seconds: 1200 }).unwrap();
+        
+        // Process temperature sample - should reset door accumulators
+        let sample = create_temp_sample(Some(5.0), None);
+        logger.process_event(LoggerEvent::TemperatureSample(sample), Timestamp { seconds: 1300 }).unwrap();
+        
+        let entry = &logger.log_buffer[0];
+        assert_eq!(entry.dorc, 1);
+        assert_eq!(entry.dorv, 100); // 100 seconds open
+        
+        // Process another temperature sample - accumulators should be reset
+        logger.process_event(LoggerEvent::TemperatureSample(sample), Timestamp { seconds: 1400 }).unwrap();
+        
+        let entry2 = &logger.log_buffer[1];
+        assert_eq!(entry2.dorc, 0); // Reset after previous sample
+        assert_eq!(entry2.dorv, 0); // Reset after previous sample
+    }
+
+    #[test]
+    fn test_log_buffer_overflow() {
+        let mut logger = Logger::new(Timestamp { seconds: 500 }, false, Timestamp { seconds: 1000 });
+        let sample = create_temp_sample(Some(5.0), Some(20.0));
+        
+        // Fill buffer to capacity
+        for i in 0..crate::constants::LOG_BUFFER_SIZE {
+            let timestamp = Timestamp { seconds: 1000 + (i as u32) * 60 };
+            logger.process_event(LoggerEvent::TemperatureSample(sample), timestamp).unwrap();
+        }
+        
+        assert_eq!(logger.log_buffer.len(), crate::constants::LOG_BUFFER_SIZE);
+        
+        // Add one more entry - should clear and restart
+        logger.process_event(LoggerEvent::TemperatureSample(sample), Timestamp { seconds: 2500 }).unwrap();
+        
+        assert_eq!(logger.log_buffer.len(), 1); // Buffer was cleared and new entry added
+    }
+
+    #[test]
+    fn test_door_cancel_integration() {
+        let mut logger = Logger::new(Timestamp { seconds: 500 }, true, Timestamp { seconds: 1000 });
+        
+        // Close door - should trigger DoorOpenCancel
+        let trigger = logger.process_event(LoggerEvent::DoorEvent(DoorEvent::Closed), Timestamp { seconds: 1200 });
+        
+        assert!(trigger.is_ok());
+        assert_eq!(trigger.unwrap(), AlarmTimerTrigger::DoorOpenCancel);
+    }
+
+    #[test]
+    fn test_comprehensive_workflow() {
+        let mut logger = Logger::new(Timestamp { seconds: 500 }, false, Timestamp { seconds: 1000 });
+        
+        // Initial temperature sample
+        let sample1 = create_temp_sample(Some(5.0), Some(20.0));
+        logger.process_event(LoggerEvent::TemperatureSample(sample1), Timestamp { seconds: 1000 }).unwrap();
+        
+        // Open door
+        logger.process_event(LoggerEvent::DoorEvent(DoorEvent::Opened), Timestamp { seconds: 1050 }).unwrap();
+        
+        // High temperature alarm
+        logger.process_event(LoggerEvent::AlarmStateChange(AlarmTimerExpired::HighTemperature), Timestamp { seconds: 1100 }).unwrap();
+        
+        // Door alarm while door is open
+        logger.process_event(LoggerEvent::AlarmStateChange(AlarmTimerExpired::Door), Timestamp { seconds: 1150 }).unwrap();
+        
+        // Temperature sample with both alarms active
+        let sample2 = create_temp_sample(Some(9.0), Some(25.0));
+        logger.process_event(LoggerEvent::TemperatureSample(sample2), Timestamp { seconds: 1200 }).unwrap();
+        
+        // Close door
+        logger.process_event(LoggerEvent::DoorEvent(DoorEvent::Closed), Timestamp { seconds: 1250 }).unwrap();
+        
+        // Final temperature sample
+        let sample3 = create_temp_sample(Some(6.0), Some(22.0));
+        logger.process_event(LoggerEvent::TemperatureSample(sample3), Timestamp { seconds: 1300 }).unwrap();
+        
+        // Verify log entries
+        assert_eq!(logger.log_buffer.len(), 3);
+        
+        let middle_entry = &logger.log_buffer[1];
+        assert!(middle_entry.alrm.contains(AlarmFlags::HIGH_TEMP));
+        assert!(middle_entry.alrm.contains(AlarmFlags::DOOR_OPEN));
+        assert_eq!(middle_entry.dorc, 1); // Door opened since last sample
+        
+        let final_entry = &logger.log_buffer[2];
+        assert_eq!(final_entry.dorc, 0); // No new door events since last sample
+        assert_eq!(final_entry.dorv, 200); // Total accumulated open time from this sample period
+    }
+}

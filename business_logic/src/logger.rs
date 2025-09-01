@@ -74,12 +74,12 @@ pub struct Logger {
 }
 
 impl Logger {
-    pub fn new(now: Timestamp, rtcw: Timestamp, door_open: bool) -> Self {
+    pub fn new(rtcw: Timestamp, door_open: bool, now: Timestamp) -> Self {
         Self {
             rtcw,
-            agg: Aggregator::new(now, door_open),
+            agg: Aggregator::new(door_open, now),
             temps: Temperatures::new(),
-            door: door::Door::new(now, door_open), // Assume door is closed at startup. TODO: read actual state from GPIO.
+            door: door::Door::new(door_open, now),
             log_buffer: ArrayVec::new(),
         }
     }
@@ -146,8 +146,8 @@ impl Logger {
             LoggerEvent::DoorEvent(door_event) => {
                 // Update aggregation with new sample. Do this before calling cancel_door_alarm()
                 // so that a record can be finalized if necessary.
-                let ready = self.agg.process_door_event(door_event, now);
-                let trigger = self.door.process_door_event(door_event, now);
+                let ready = self.agg.door_event(door_event, now);
+                let trigger = self.door.door_event(door_event, now);
                 if trigger == AlarmTimerTrigger::DoorOpenCancel {
                     self.agg.cancel_door_alarm();
                 }
@@ -160,14 +160,16 @@ impl Logger {
             // LoggerEvent::CompressorEvent(compressor_event) => {
             //     self.agg.process_compressor_event(compressor_event, ts);
             // }
-            LoggerEvent::AlarmStateChange(state) => {
-                // Placeholder.
-                let ready = self.agg.alarm_expired(state, now);
-                match state {
+            LoggerEvent::AlarmStateChange(expiring) => {
+                
+                let ready = self.agg.alarm_expired(expiring, now);
+                match expiring {
                     AlarmTimerExpired::HighTemperature | AlarmTimerExpired::LowTemperature => {
-                        self.temps.alarm_expired(state);
+                        self.temps.alarm_expired(expiring);
                     },
-                    _ => {}, // TODO: add door alarm handling here.
+                    AlarmTimerExpired::Door => {
+                        self.door.alarm_expired(expiring);
+                    },
                 }
                 (ready, AlarmTimerTrigger::NoTrigger)
             }

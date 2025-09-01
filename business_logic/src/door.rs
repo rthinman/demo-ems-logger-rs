@@ -6,7 +6,7 @@ use crate::timestamp::Timestamp;
 
 // const DOOR_ALARM_THRESHOLD: u32 = 300;    // 5 minutes in seconds.
 
-// // TODO: rework to have functions that get and reset accumulators all at once.  
+// // TODO: rework to have functions that get and reset accumulators all at once?  
 
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,7 +25,7 @@ enum DoorState {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Door {
-    state: DoorState, 
+    status: DoorState, 
     open_count: u16, // Count of opening in this sample period.
     open_accum: u32, // Accumulated open time in this sample period, in seconds.
     new_alarm: bool, // Flag indicating if the alarm was triggered in this sample period.
@@ -34,7 +34,7 @@ pub struct Door {
 impl Door {
     /// Create a new Door instance with the current door state.
     /// Note that if the door is open, the caller should also trigger the alarm timer.
-    pub fn new(now: Timestamp, open: bool) -> Self {
+    pub fn new(open: bool, now: Timestamp) -> Self {
         // Assume the door was opened now.
         let opened = if open {
             DoorState::OpenNoAlarm(now)
@@ -44,19 +44,19 @@ impl Door {
         let open_count = if open { 1 } else { 0 };
 
         Self {
-            state: opened,
+            status: opened,
             open_count: open_count,
             open_accum: 0,
             new_alarm: false,
         }
     }
 
-    pub fn process_door_event(&mut self, event: DoorEvent, now: Timestamp) -> AlarmTimerTrigger {
+    pub fn door_event(&mut self, event: DoorEvent, now: Timestamp) -> AlarmTimerTrigger {
         
-        // TODO: Handle the case where the door is opened while it is already open, and vice versa.
+        // TODO: Handle the case where the door is opened while it is already open?
         match event {
             DoorEvent::Opened => {
-                self.state = DoorState::OpenNoAlarm(now);
+                self.status = DoorState::OpenNoAlarm(now);
                 // Counts incremented when the door is opened.
                 self.open_count += 1;
 
@@ -65,7 +65,7 @@ impl Door {
             }
             DoorEvent::Closed => {
                 // If the door was open, accumulate the open duration.
-                match self.state {
+                match self.status {
                     DoorState::Closed => {
                         // Door was already closed, do nothing.
                     }
@@ -83,12 +83,12 @@ impl Door {
     pub fn alarm_expired(&mut self, event: AlarmTimerExpired) {
         if event == AlarmTimerExpired::Door {
             self.new_alarm = true;
-            match self.state {
+            match self.status {
                 DoorState::Closed => {
                     // This should not happen, but just in case, do nothing.
                 }
                 DoorState::OpenNoAlarm(opened) => {
-                    self.state = DoorState::OpenAlarm(opened);
+                    self.status = DoorState::OpenAlarm(opened);
                 }
                 DoorState::OpenAlarm(_) => {
                     // Already in alarm state, do nothing.
@@ -98,7 +98,7 @@ impl Door {
     }
 
     pub fn is_alarm(&self) -> bool {
-        match self.state {
+        match self.status {
             DoorState::OpenAlarm(_) => true,
             _ => false,
         }
@@ -116,7 +116,7 @@ impl Door {
 
     pub fn get_idrv(&self, now: Timestamp) -> u32 {
         // Return the duration the door has been open at this instant.
-        match self.state {
+        match self.status {
             DoorState::Closed => 0,
             DoorState::OpenNoAlarm(opened) | DoorState::OpenAlarm(opened) => {
                 if now.seconds >= opened.seconds {

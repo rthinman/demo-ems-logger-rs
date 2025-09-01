@@ -15,8 +15,6 @@ enum TemperatureState {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Temperatures {
-    pub vaccine: Option<f32>, // TODO: do we need to store these temperatures?
-    pub ambient: Option<f32>,
     status: TemperatureState,
     new_high_alarm: bool, // Tracks a new alarm that starts between temperature samples.
     new_low_alarm: bool,  // Tracks a new alarm that starts between temperature samples.
@@ -25,8 +23,6 @@ pub struct Temperatures {
 impl Temperatures {
     pub fn new() -> Self {
         Self {
-            vaccine: None,
-            ambient: None,
             status: TemperatureState::Safe,
             new_high_alarm: false,
             new_low_alarm: false,
@@ -81,11 +77,7 @@ impl Temperatures {
                 AlarmTimerTrigger::NoTrigger
         };
 
-        // Save the latest temperatures.
-        self.vaccine = sample.vaccine;
-        self.ambient = sample.ambient;
-
-        trigger // TODO: if we don't add more code, move the save to top of function just return the value of the match.
+        trigger
     }
 
     pub fn alarm_expired(&mut self, state: AlarmTimerExpired) {

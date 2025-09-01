@@ -1,15 +1,11 @@
 //! This module contains the business logic for handling power availability events, including
 //! tracking power on/off events, accumulating available durations, and managing alarms.
 
+use crate::constants::POWER_ALARM_THRESHOLD;
 use crate::timestamp::{Timestamp, TimestampError};
 
-const POWER_ALARM_THRESHOLD: u32 = 86400;    // 24 hours in seconds.
 
-// TODO: rework to have functions that get and reset accumulators all at once.  Need to decide how
-//       to handle the input timestamp: 
-//       If it is before prev_x_sample_ended + X_SAMPLE_PERIOD, do we advance to that one?
-//       At it exactly is the ideal case.
-//       If it is after prev_x_sample_ended + X_SAMPLE_PERIOD, do we just output for the one sample period?
+// TODO: rework to have functions that get and reset accumulators all at once?
 
 /// Represents a power event with a timestamp.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -1,7 +1,7 @@
 //! This module contains the business logic for aggregating temperature, 
 //! door opening, and power data
 
-use crate::{door::{DoorEvent}, logger::{AlarmTimerExpired, AlarmTimerTrigger, LoggerEvent, TemperatureSample}, timestamp::{Timestamp, TimestampError}};
+use crate::{door::{DoorEvent}, logger::{AlarmTimerExpired, TemperatureSample}, timestamp::Timestamp};
 use crate::constants::{MAX_GOOD_VACCINE_TEMP, MIN_GOOD_VACCINE_TEMP};
 
 // Structs to hold data
@@ -49,7 +49,7 @@ pub struct Aggregator {
 }
 
 impl Aggregator {
-    pub fn new(now: Timestamp, door_open: bool) -> Self {
+    pub fn new(door_open: bool, now: Timestamp) -> Self {
         let next_record_start = now.get_next_aggregation_start();
         let mut active_record = AggregationRecord::default();
         active_record.record_start = now;
@@ -62,7 +62,6 @@ impl Aggregator {
         };
 
         Self {
-            // status: AlarmState::Normal,
             timestamp: now,
             next_record_start,
             last_ambient_temp: None,
@@ -157,7 +156,7 @@ impl Aggregator {
         record_ready
     }
 
-    pub fn process_door_event(&mut self, door: DoorEvent, now: Timestamp) -> bool {
+    pub fn door_event(&mut self, door: DoorEvent, now: Timestamp) -> bool {
         // Check if we need to end the current record, and save it.
         let record_ready = self.check_for_end_of_record(now);
 
@@ -170,7 +169,7 @@ impl Aggregator {
             }
             DoorEvent::Closed => {
                 if let Some(open_time) = self.door_open_start {
-                    let open_duration = now.seconds - open_time.seconds; // TODO: check logic.
+                    let open_duration = now.seconds - open_time.seconds;
                     self.active_record.vaccine_door_seconds += open_duration;
                     self.door_open_start = None;
                 }
@@ -323,7 +322,7 @@ mod tests {
     #[test]
     fn test_aggregator_initialization() {
         let now = Timestamp { seconds: 1000 };
-        let agg = Aggregator::new(now);
+        let agg = Aggregator::new(false, now);
         
         assert_eq!(agg.timestamp, now);
         assert_eq!(agg.last_ambient_temp, None);
@@ -335,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_single_temperature_sample() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         let sample = create_temp_sample(Some(5.0), Some(20.0));
         let now = Timestamp { seconds: 1000 };
         
@@ -352,7 +351,7 @@ mod tests {
 
     #[test]
     fn test_temperature_aggregation_over_time() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // First sample
         let sample1 = create_temp_sample(Some(5.0), Some(20.0));
@@ -375,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_high_temperature_tracking() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Start with a high temperature
         let sample1 = create_temp_sample(Some(9.0), None);
@@ -392,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_low_temperature_tracking() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Start with a low temperature
         let sample1 = create_temp_sample(Some(1.5), None);
@@ -409,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_mixed_temperature_ranges() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Normal temperature
         let sample1 = create_temp_sample(Some(5.0), None);
@@ -434,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_missing_vaccine_temperature() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // First valid sample
         let sample1 = create_temp_sample(Some(5.0), Some(20.0));
@@ -453,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_alarm_time_tracking() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Start high temperature alarm
         agg.alarm_expired(AlarmTimerExpired::HighTemperature, Timestamp { seconds: 1100 });
@@ -470,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_alarm_transition_from_high_to_low() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Start high temperature alarm
         agg.alarm_expired(AlarmTimerExpired::HighTemperature, Timestamp { seconds: 1100 });
@@ -490,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_cancel_temperature_alarms() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Set up both alarms
         agg.high_alarm_ts = Some(Timestamp { seconds: 1100 });
@@ -504,7 +503,7 @@ mod tests {
 
     #[test]
     fn test_min_max_temperature_tracking() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // First temperature sets initial min/max
         let sample1 = create_temp_sample(Some(5.0), None);
@@ -527,7 +526,7 @@ mod tests {
 
     #[test]
     fn test_weighted_average_calculation() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // First temperature for 60 seconds
         let sample1 = create_temp_sample(Some(4.0), Some(18.0));
@@ -558,7 +557,7 @@ mod tests {
 
     #[test]
     fn test_alarm_time_accumulation() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Start high alarm
         agg.alarm_expired(AlarmTimerExpired::HighTemperature, Timestamp { seconds: 1100 });
@@ -579,7 +578,7 @@ mod tests {
 
     #[test]
     fn test_low_alarm_accumulation() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Start low alarm
         agg.alarm_expired(AlarmTimerExpired::LowTemperature, Timestamp { seconds: 1200 });
@@ -593,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_temperature_range_boundaries() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Test exactly at boundaries
         let sample1 = create_temp_sample(Some(8.0), None); // Exactly at MAX_GOOD_VACCINE_TEMP
@@ -609,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_interleaved_missing_samples() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Valid sample
         agg.new_temperatures(create_temp_sample(Some(5.0), Some(20.0)), Timestamp { seconds: 1000 });
@@ -629,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_alarm_state_transitions() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Start with high alarm
         agg.alarm_expired(AlarmTimerExpired::HighTemperature, Timestamp { seconds: 1100 });
@@ -650,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_temperature_aggregation_with_gaps() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // First valid sample
         agg.new_temperatures(create_temp_sample(Some(5.0), Some(20.0)), Timestamp { seconds: 1000 });
@@ -677,7 +676,7 @@ mod tests {
     
     #[test]
     fn test_check_for_end_of_record_not_ready() {
-        let mut agg = Aggregator::new(Timestamp { seconds: 1000 });
+        let mut agg = Aggregator::new(false, Timestamp { seconds: 1000 });
         
         // Time before next_record_start should return false
         let before_end = Timestamp { seconds: agg.next_record_start.seconds - 100 };
@@ -691,7 +690,7 @@ mod tests {
     #[test]
     fn test_check_for_end_of_record_finalizes_to_record_end() {
         let start_time = Timestamp { seconds: 1000 };
-        let mut agg = Aggregator::new(start_time);
+        let mut agg = Aggregator::new(false, start_time);
         let record_end = agg.next_record_start;
         
         // Set up temperatures that started before record end
@@ -712,7 +711,7 @@ mod tests {
     #[test]
     fn test_end_of_record_finalizes_alarm_times_to_record_end() {
         let start_time = Timestamp { seconds: 1000 };
-        let mut agg = Aggregator::new(start_time);
+        let mut agg = Aggregator::new(false, start_time);
         let record_end = agg.next_record_start;
         
         // Set up active alarms before record end
@@ -733,7 +732,7 @@ mod tests {
     #[test]
     fn test_end_of_record_with_high_low_temperature_finalization() {
         let start_time = Timestamp { seconds: 1000 };
-        let mut agg = Aggregator::new(start_time);
+        let mut agg = Aggregator::new(false, start_time);
         let record_end = agg.next_record_start;
         
         // High temperature active until record end
@@ -747,7 +746,7 @@ mod tests {
         assert_eq!(agg.prev_record.tvc_high_seconds, 700); // 100 + 600
         
         // Test low temperature finalization
-        let mut agg2 = Aggregator::new(start_time);
+        let mut agg2 = Aggregator::new(false, start_time);
         agg2.last_vaccine_temp = Some(1.0);
         agg2.last_vaccine_ts = Some(Timestamp { seconds: record_end.seconds - 400 });
         agg2.active_record.tvc_low_seconds = 200;
@@ -760,7 +759,7 @@ mod tests {
     #[test]
     fn test_record_length_calculation() {
         let start_time = Timestamp { seconds: 1000 };
-        let mut agg = Aggregator::new(start_time);
+        let mut agg = Aggregator::new(false, start_time);
         let record_end = agg.next_record_start;
         
         agg.check_for_end_of_record(record_end);
@@ -773,7 +772,7 @@ mod tests {
     #[test]
     fn test_new_record_initialization_after_rollover() {
         let start_time = Timestamp { seconds: 1000 };
-        let mut agg = Aggregator::new(start_time);
+        let mut agg = Aggregator::new(false, start_time);
         let first_end = agg.next_record_start;
         let second_end = first_end.get_next_aggregation_start();
         
@@ -796,7 +795,7 @@ mod tests {
     #[test]
     fn test_end_of_record_triggered_by_new_temperatures() {
         let start_time = Timestamp { seconds: 1000 };
-        let mut agg = Aggregator::new(start_time);
+        let mut agg = Aggregator::new(false, start_time);
         let record_end = agg.next_record_start;
         
         // Add temperature before record end

@@ -461,6 +461,9 @@ name = "embedded-hal"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
+dependencies = [
+ "defmt 0.3.100",
+]
 
 [[package]]
 name = "embedded-hal-async"
@@ -468,6 +471,17 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c4c685bbef7fe13c3c6dd4da26841ed3980ef33e841cddfa15ce8a8fb3f1884"
 dependencies = [
+ "defmt 0.3.100",
+ "embedded-hal 1.0.0",
+]
+
+[[package]]
+name = "embedded-hal-bus"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513e0b3a8fb7d3013a8ae17a834283f170deaf7d0eeab0a7c1a36ad4dd356d22"
+dependencies = [
+ "critical-section",
  "embedded-hal 1.0.0",
 ]
 
@@ -498,6 +512,17 @@ checksum = "3ff09972d4073aa8c299395be75161d582e7629cd663171d62af73c8d50dba3f"
 dependencies = [
  "defmt 0.3.100",
  "embedded-io",
+]
+
+[[package]]
+name = "embedded-nand"
+version = "0.1.0"
+
+[[package]]
+name = "embedded-nand-async"
+version = "0.1.0"
+dependencies = [
+ "embedded-nand",
 ]
 
 [[package]]
@@ -566,9 +591,14 @@ dependencies = [
  "embassy-stm32",
  "embassy-sync 0.7.0",
  "embassy-time",
+ "embedded-hal 1.0.0",
  "embedded-hal-async",
+ "embedded-hal-bus",
+ "embedded-nand",
  "panic-halt",
  "panic-probe",
+ "spi-nand",
+ "spi-nand-devices",
 ]
 
 [[package]]
@@ -729,6 +759,27 @@ name = "semver-parser"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
+
+[[package]]
+name = "spi-nand"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "embedded-nand",
+ "embedded-nand-async",
+ "thiserror",
+]
+
+[[package]]
+name = "spi-nand-devices"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "embedded-nand",
+ "spi-nand",
+]
 
 [[package]]
 name = "stable_deref_trait"

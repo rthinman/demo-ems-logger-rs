@@ -24,6 +24,15 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 
+// use spi_nand_devices::winbond::w25n::W25N01GW;
+// use spi_nand::SpiNandDevice;
+// use spi_nand::SpiNand;
+use embedded_nand::{BlockIndex, PageIndex};
+use spi_nand::cmd_blocking::SpiNandBlocking;
+use spi_nand::{SpiNand, SpiNandDevice};
+use spi_nand_devices::winbond::w25n::W25N01GW;
+
+
 // Internal modules, both this crate and the business logic crate.
 use business_logic::{door::DoorEvent, logger::{self, AlarmTimerTrigger, Logger, LoggerEvent, TemperatureSample}};
 use business_logic::timestamp::Timestamp;
@@ -100,6 +109,55 @@ async fn main(spawner: Spawner) {
         Rtclock::from_rtcw(rtc, rtcw)
     };
 
+    // SPI and flash
+
+    let mut spi  = embassy_stm32::spi::Spi::new(
+        p.SPI2,
+        p.PB13, // SCK
+        p.PB15, // COPI/MOSI
+        p.PB14, // CIPO/MISO
+        p.DMA1_CH5,
+        p.DMA1_CH4,
+        embassy_stm32::spi::Config::default(),
+    );
+
+    let mut flash_pwr_nen = Output::new(p.PA8, Level::Low, Speed::Low); // Power enable for the flash, start enabled.
+    let mut cs = Output::new(p.PB12, Level::High, Speed::High); // Chip select for the flash.
+
+    // Create exclusive access to the SPI bus as [embedded_hal::spi::SpiDevice]
+    let spi_dev = embedded_hal_bus::spi::ExclusiveDevice::new(spi, cs, embedded_hal_bus::spi::NoDelay).unwrap();
+
+    // Create [spi_flash::device::SpiFlash] instance
+    let device = W25N01GW::new();
+    //let b = <W25N01GW as SpiNand<2048>>::BLOCK_COUNT;
+
+    let mut flash = SpiNandDevice::new(spi_dev, device);
+
+    let blk = flash.reset_blocking().unwrap();
+    let jed = flash.verify_jedec_blocking().unwrap();
+    info!("Flash reset result: {:?}", blk);
+    info!("Flash JEDEC ID: {:?}", jed);
+
+    // let reg1 = flash.device.read_register_cmd(&mut spi, 0xA0).unwrap();
+    // let reg2 = flash.device.read_register_cmd(&mut spi, 0xB0).unwrap();
+    // let reg3 = flash.device.read_register_cmd(&mut spi, 0xC0).unwrap();
+    
+    // info!("Flash Register 1 (0xA0): {:?}", reg1);
+    // info!("Flash Register 2 (0xB0): {:?}", reg2);
+    // info!("Flash Register 3 (0xC0): {:?}", reg3);
+
+
+    embassy_time::Timer::after_secs(1).await;
+
+    for i in 0..1024 {
+        if flash
+            .device
+            .block_marked_bad(&mut flash.spi, BlockIndex::new(i))
+            .unwrap()
+        {
+            info!("Block {} is marked bad", i);
+        }
+    }
 
     // I2C and temp sensor initialization.
     bind_interrupts!(struct Irqs {

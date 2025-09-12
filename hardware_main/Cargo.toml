@@ -25,7 +25,7 @@ embedded-nand-async = { path = "../../embedded-nand/embedded-nand-async"}
 spi-nand = { path = "../../embedded-nand/spi-nand"}
 spi-nand-devices = { path = "../../embedded-nand/spi-nand-devices"}
 #embedded-hal = "1.0.0"
-embedded-hal-bus = "0.3.0"
+embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 
 [[bin]]
 name = "hardware_main"

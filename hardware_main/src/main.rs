@@ -20,21 +20,16 @@ use embassy_stm32::{bind_interrupts, exti::ExtiInput, peripherals};
 use embassy_stm32::{gpio::{Level, Output, Pull, Speed}, i2c::{ErrorInterruptHandler, EventInterruptHandler, I2c}, rtc::{Rtc, RtcConfig}, time::Hertz, Config};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::{Channel, Sender};
-use embassy_sync::mutex::Mutex;
-use embassy_embedded_hal;
 use embedded_hal_bus;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 
-// use spi_nand_devices::winbond::w25n::W25N01GW;
-// use spi_nand::SpiNandDevice;
-// use spi_nand::SpiNand;
+// Crates in different repositories
 use embedded_nand_async::NandFlash;
 use spi_nand::cmd_async::SpiNandAsync;
 use spi_nand::{SpiNand, SpiNandDevice};
 use spi_nand_devices::winbond::w25n::{asyn::BBMAsync, W25N01GW};
-
 
 // Internal modules, both this crate and the business logic crate.
 use business_logic::{door::DoorEvent, logger::{self, AlarmTimerTrigger, Logger, LoggerEvent, TemperatureSample}};
@@ -131,9 +126,8 @@ async fn main(spawner: Spawner) {
     let device = W25N01GW::new();
     //let b = <W25N01GW as SpiNand<2048>>::BLOCK_COUNT;
 
-    // Create async SPI device using embassy shared bus
-    let spi_bus = embassy_sync::mutex::Mutex::<embassy_sync::blocking_mutex::raw::NoopRawMutex, _>::new(spi);
-    let spi_device = embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice::new(&spi_bus, cs);
+    // Create async SPI device using ExclusiveDevice (only one device on bus)
+    let spi_device = embedded_hal_bus::spi::ExclusiveDevice::new(spi, cs, embedded_hal_bus::spi::NoDelay).unwrap();
     let mut flash = SpiNandDevice::new(spi_device, device);
 
     let blk = flash.reset_async().await.unwrap();

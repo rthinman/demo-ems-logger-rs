@@ -27,10 +27,10 @@ use panic_halt as _;
 // use spi_nand_devices::winbond::w25n::W25N01GW;
 // use spi_nand::SpiNandDevice;
 // use spi_nand::SpiNand;
-use embedded_nand::{BlockIndex, PageIndex};
+use embedded_nand::{BlockIndex, NandFlash, PageIndex};
 use spi_nand::cmd_blocking::SpiNandBlocking;
 use spi_nand::{SpiNand, SpiNandDevice};
-use spi_nand_devices::winbond::w25n::W25N01GW;
+use spi_nand_devices::winbond::w25n::{blocking::BBMBlocking, W25N01GW};
 
 
 // Internal modules, both this crate and the business logic crate.
@@ -39,7 +39,7 @@ use business_logic::timestamp::Timestamp;
 use alarm_timer_state::{AlarmTimerState, TempTimerActive};
 use fmt::{info, warn, unwrap};
 use rtclock::{Rtclock};
-use temp_sensor::{AMBIENT_ADDRESS, DualTempSensor, VACCINE_ADDRESS};
+// use temp_sensor::{AMBIENT_ADDRESS, DualTempSensor, VACCINE_ADDRESS};
 
 
 // Communicate between tasks using channels.
@@ -138,44 +138,56 @@ async fn main(spawner: Spawner) {
     info!("Flash reset result: {:?}", blk);
     info!("Flash JEDEC ID: {:?}", jed);
 
-    // let reg1 = flash.device.read_register_cmd(&mut spi, 0xA0).unwrap();
-    // let reg2 = flash.device.read_register_cmd(&mut spi, 0xB0).unwrap();
-    // let reg3 = flash.device.read_register_cmd(&mut spi, 0xC0).unwrap();
-    
-    // info!("Flash Register 1 (0xA0): {:?}", reg1);
-    // info!("Flash Register 2 (0xB0): {:?}", reg2);
-    // info!("Flash Register 3 (0xC0): {:?}", reg3);
+    let reg1 = flash.device.read_register_cmd(&mut flash.spi, 0xA0).unwrap();
+    info!("Flash Register 1 (0xA0): {:?}", reg1);
 
+    let reg2 = flash.device.read_register_cmd(&mut flash.spi, 0xB0).unwrap();
+    info!("Flash Register 2 (0xB0): {:?}", reg2);
+    let reg3 = flash.device.read_register_cmd(&mut flash.spi, 0xC0).unwrap();
+    info!("Flash Register 3 (0xC0): {:?}", reg3);
 
+    let mut buf: [u8; 10] = [0; 10];
+    let foo = flash.read(0, &mut buf).unwrap();
+    // info!("block status {:?}", foo);
     embassy_time::Timer::after_secs(1).await;
 
-    for i in 0..1024 {
-        if flash
-            .device
-            .block_marked_bad(&mut flash.spi, BlockIndex::new(i))
-            .unwrap()
-        {
-            info!("Block {} is marked bad", i);
-        }
-    }
+    // for i in 0..1024 {
+    //     // let (bb0, bb1) = flash
+    //     //     .device
+    //     //     .block_marked_bad(&mut flash.spi, BlockIndex::new(i))
+    //     //     .unwrap();
+    //     // info!("Block {} values {}, {}", i, bb0, bb1);
+    //     if flash
+    //         .device
+    //         .block_marked_bad(&mut flash.spi, BlockIndex::new(i))
+    //         .unwrap()
+    //     {
+    //         info!("Block {} is marked bad", i);
+    //     }
+    // }
 
-    // I2C and temp sensor initialization.
-    bind_interrupts!(struct Irqs {
-        I2C1_EV => EventInterruptHandler<peripherals::I2C1>;
-        I2C1_ER => ErrorInterruptHandler<peripherals::I2C1>;
-    });
+    let lut = flash.device.is_lut_full(&mut flash.spi).unwrap();
+    info!("look-up table full {:?}", lut);
 
-    let mut i2c = I2c::new(
-        p.I2C1, 
-        p.PB6, 
-        p.PB7, 
-        Irqs,
-        p.DMA1_CH6,
-        p.DMA1_CH7, 
-        Hertz(400_000),
-        Default::default(),
-    );
-    let mut temp_sensor = DualTempSensor::new(i2c, AMBIENT_ADDRESS, VACCINE_ADDRESS, pwrv_nen);
+    let lut = flash.device.read_lut_cmd(&mut flash.spi).unwrap();
+
+    // // I2C and temp sensor initialization.
+    // bind_interrupts!(struct Irqs {
+    //     I2C1_EV => EventInterruptHandler<peripherals::I2C1>;
+    //     I2C1_ER => ErrorInterruptHandler<peripherals::I2C1>;
+    // });
+
+    // let mut i2c = I2c::new(
+    //     p.I2C1, 
+    //     p.PB6, 
+    //     p.PB7, 
+    //     Irqs,
+    //     p.DMA1_CH6,
+    //     p.DMA1_CH7, 
+    //     Hertz(400_000),
+    //     Default::default(),
+    // );
+    // let mut temp_sensor = DualTempSensor::new(i2c, AMBIENT_ADDRESS, VACCINE_ADDRESS, pwrv_nen);
 
     let door_open = btn.is_low();
     let mut logger = Logger::new(rt_clock.get_rtcw(), door_open, rt_clock.get_timestamp());
@@ -185,9 +197,9 @@ async fn main(spawner: Spawner) {
     }
 
     // Spawn the tasks
-    spawner.spawn(button(btn, EVENT_CHANNEL.sender())).unwrap();
+    // spawner.spawn(button(btn, EVENT_CHANNEL.sender())).unwrap();
     spawner.spawn(led_blink(led)).unwrap();
-    spawner.spawn(get_temperature(temp_sensor, EVENT_CHANNEL.sender())).unwrap();
+    // spawner.spawn(get_temperature(temp_sensor, EVENT_CHANNEL.sender())).unwrap();
     spawner.spawn(alarm_timeouts(ALARM_CHANNEL.receiver(), EVENT_CHANNEL.sender())).unwrap();
 
     warn!("Starting main loop");
@@ -233,22 +245,22 @@ async fn main(spawner: Spawner) {
 }
 
 /// Task to handle button presses, which simulate door open/close events.
-#[embassy_executor::task]
-async fn button(mut btn: ExtiInput<'static>, msg: Sender<'static, ThreadModeRawMutex, LoggerEvent, 8>) {
-    loop {
-        btn.wait_for_falling_edge().await;
-        info!("Button pressed/door open!");
-        msg.send(LoggerEvent::DoorEvent(DoorEvent::Opened)).await;
-        // Debounce delay
-        Timer::after(Duration::from_millis(50)).await;
-        // Wait for release (rising edge)
-        btn.wait_for_rising_edge().await;
-        info!("Button released/door closed!");
-        msg.send(LoggerEvent::DoorEvent(DoorEvent::Closed)).await;
-        // Debounce delay
-        Timer::after(Duration::from_millis(50)).await;
-    }
-}
+// #[embassy_executor::task]
+// async fn button(mut btn: ExtiInput<'static>, msg: Sender<'static, ThreadModeRawMutex, LoggerEvent, 8>) {
+//     loop {
+//         btn.wait_for_falling_edge().await;
+//         info!("Button pressed/door open!");
+//         msg.send(LoggerEvent::DoorEvent(DoorEvent::Opened)).await;
+//         // Debounce delay
+//         Timer::after(Duration::from_millis(50)).await;
+//         // Wait for release (rising edge)
+//         btn.wait_for_rising_edge().await;
+//         info!("Button released/door closed!");
+//         msg.send(LoggerEvent::DoorEvent(DoorEvent::Closed)).await;
+//         // Debounce delay
+//         Timer::after(Duration::from_millis(50)).await;
+//     }
+// }
 
 /// Task to blink an LED to show the system is alive.
 #[embassy_executor::task]
@@ -262,18 +274,18 @@ async fn led_blink(mut led: Output<'static>) {
 }
 
 /// Task to read temperatures from the sensors and send them to the logger.
-#[embassy_executor::task]
-async fn get_temperature(
-    mut temp_sensor: DualTempSensor<I2c<'static, embassy_stm32::mode::Async>>,
-    msg: Sender<'static, ThreadModeRawMutex, LoggerEvent, 8>,
-) {
-    let mut ticker = Ticker::every(Duration::from_secs(10)); // Read every 10 seconds
-    loop {
-        let temperatures = temp_sensor.read_temperature_celsius().await;
-        msg.send(LoggerEvent::TemperatureSample(temperatures)).await;
-        ticker.next().await;
-    }
-}
+// #[embassy_executor::task]
+// async fn get_temperature(
+//     mut temp_sensor: DualTempSensor<I2c<'static, embassy_stm32::mode::Async>>,
+//     msg: Sender<'static, ThreadModeRawMutex, LoggerEvent, 8>,
+// ) {
+//     let mut ticker = Ticker::every(Duration::from_secs(10)); // Read every 10 seconds
+//     loop {
+//         let temperatures = temp_sensor.read_temperature_celsius().await;
+//         msg.send(LoggerEvent::TemperatureSample(temperatures)).await;
+//         ticker.next().await;
+//     }
+// }
 
 /// Task to manage alarm timers and send alarm state changes to the logger.
 #[embassy_executor::task]

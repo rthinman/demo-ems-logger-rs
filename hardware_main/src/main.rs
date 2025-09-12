@@ -20,6 +20,9 @@ use embassy_stm32::{bind_interrupts, exti::ExtiInput, peripherals};
 use embassy_stm32::{gpio::{Level, Output, Pull, Speed}, i2c::{ErrorInterruptHandler, EventInterruptHandler, I2c}, rtc::{Rtc, RtcConfig}, time::Hertz, Config};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::{Channel, Sender};
+use embassy_sync::mutex::Mutex;
+use embassy_embedded_hal;
+use embedded_hal_bus;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
@@ -27,10 +30,10 @@ use panic_halt as _;
 // use spi_nand_devices::winbond::w25n::W25N01GW;
 // use spi_nand::SpiNandDevice;
 // use spi_nand::SpiNand;
-use embedded_nand::{BlockIndex, NandFlash, PageIndex};
-use spi_nand::cmd_blocking::SpiNandBlocking;
+use embedded_nand_async::NandFlash;
+use spi_nand::cmd_async::SpiNandAsync;
 use spi_nand::{SpiNand, SpiNandDevice};
-use spi_nand_devices::winbond::w25n::{blocking::BBMBlocking, W25N01GW};
+use spi_nand_devices::winbond::w25n::{asyn::BBMAsync, W25N01GW};
 
 
 // Internal modules, both this crate and the business logic crate.
@@ -124,30 +127,30 @@ async fn main(spawner: Spawner) {
     let mut flash_pwr_nen = Output::new(p.PA8, Level::Low, Speed::Low); // Power enable for the flash, start enabled.
     let mut cs = Output::new(p.PB12, Level::High, Speed::High); // Chip select for the flash.
 
-    // Create exclusive access to the SPI bus as [embedded_hal::spi::SpiDevice]
-    let spi_dev = embedded_hal_bus::spi::ExclusiveDevice::new(spi, cs, embedded_hal_bus::spi::NoDelay).unwrap();
-
-    // Create [spi_flash::device::SpiFlash] instance
+    // Create [spi_flash::device::SpiFlash] instance  
     let device = W25N01GW::new();
     //let b = <W25N01GW as SpiNand<2048>>::BLOCK_COUNT;
 
-    let mut flash = SpiNandDevice::new(spi_dev, device);
+    // Create async SPI device using embassy shared bus
+    let spi_bus = embassy_sync::mutex::Mutex::<embassy_sync::blocking_mutex::raw::NoopRawMutex, _>::new(spi);
+    let spi_device = embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice::new(&spi_bus, cs);
+    let mut flash = SpiNandDevice::new(spi_device, device);
 
-    let blk = flash.reset_blocking().unwrap();
-    let jed = flash.verify_jedec_blocking().unwrap();
+    let blk = flash.reset_async().await.unwrap();
+    let jed = flash.verify_jedec_async().await.unwrap();
     info!("Flash reset result: {:?}", blk);
     info!("Flash JEDEC ID: {:?}", jed);
 
-    let reg1 = flash.device.read_register_cmd(&mut flash.spi, 0xA0).unwrap();
+    let reg1 = flash.device.read_register_cmd(&mut flash.spi, 0xA0).await.unwrap();
     info!("Flash Register 1 (0xA0): {:?}", reg1);
 
-    let reg2 = flash.device.read_register_cmd(&mut flash.spi, 0xB0).unwrap();
+    let reg2 = flash.device.read_register_cmd(&mut flash.spi, 0xB0).await.unwrap();
     info!("Flash Register 2 (0xB0): {:?}", reg2);
-    let reg3 = flash.device.read_register_cmd(&mut flash.spi, 0xC0).unwrap();
+    let reg3 = flash.device.read_register_cmd(&mut flash.spi, 0xC0).await.unwrap();
     info!("Flash Register 3 (0xC0): {:?}", reg3);
 
     let mut buf: [u8; 10] = [0; 10];
-    let foo = flash.read(0, &mut buf).unwrap();
+    let foo = flash.read(0, &mut buf).await.unwrap();
     // info!("block status {:?}", foo);
     embassy_time::Timer::after_secs(1).await;
 
@@ -166,10 +169,10 @@ async fn main(spawner: Spawner) {
     //     }
     // }
 
-    let lut = flash.device.is_lut_full(&mut flash.spi).unwrap();
+    let lut = flash.device.is_lut_full(&mut flash.spi).await.unwrap();
     info!("look-up table full {:?}", lut);
 
-    let lut = flash.device.read_lut_cmd(&mut flash.spi).unwrap();
+    let lut = flash.device.read_lut_cmd(&mut flash.spi).await.unwrap();
 
     // // I2C and temp sensor initialization.
     // bind_interrupts!(struct Irqs {

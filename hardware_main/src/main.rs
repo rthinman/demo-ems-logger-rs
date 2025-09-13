@@ -188,7 +188,7 @@ async fn main(spawner: Spawner) {
     // info!("Page 0 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
 
     let mut buf: [u8; 2050] = [0; 2050];
-    let foo = flash.device.read_page_slice(&mut flash.spi, PageIndex::new(0), ColumnAddress::new(0), &mut buf).await.unwrap();
+    let foo = flash.read_page_slice_async(PageIndex::new(0), ColumnAddress::new(0), &mut buf).await.unwrap();
     info!("Page 0 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
     info!("bad and seal bytes {}, {}", buf[2048], buf[2049]);
     // Check ECC
@@ -209,7 +209,7 @@ async fn main(spawner: Spawner) {
     // let foo = flash.erase_block(BlockIndex::new(0)).await.unwrap();
     // let foo = flash.read(0, &mut buf).await.unwrap();
     // info!("Page 0 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
-    // let foo = flash.device.read_page_slice(&mut flash.spi, PageIndex::new(0), ColumnAddress::new(2048), &mut small_buf).await.unwrap();
+    // let foo = flash.read_page_slice_async(PageIndex::new(0), ColumnAddress::new(2048), &mut small_buf).await.unwrap();
     // info!("bad and seal bytes {}, {}", small_buf[0], small_buf[1]);
 
     // // New data for page 0
@@ -224,7 +224,7 @@ async fn main(spawner: Spawner) {
     // // Unprotect array.
     // let foo = flash.device.write_register_cmd(&mut flash.spi, <W25N01GW as SpiNand::<2048>>::CONFIGURATION_REGISTER, 0x00).await.unwrap();
     // // Write the page + two spare.
-    // let foo = flash.device.write_page_slice(&mut flash.spi, PageIndex::new(0), ColumnAddress::new(0), &buf).await.unwrap();
+    // let foo = flash.write_page_slice_async(PageIndex::new(0), ColumnAddress::new(0), &buf).await.unwrap();
 
     // // Change the buffer to ensure we read back real values.
     // buf[0] = 30;
@@ -236,7 +236,7 @@ async fn main(spawner: Spawner) {
     // buf[2049] = 30;
 
     // // Read page 0 again to verify first few bytes, last few bytes, and "seal" byte.
-    // let foo = flash.device.read_page_slice(&mut flash.spi, PageIndex::new(0), ColumnAddress::new(0), &mut buf).await.unwrap();
+    // let foo = flash.read_page_slice_async(PageIndex::new(0), ColumnAddress::new(0), &mut buf).await.unwrap();
     // info!("Page 0 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
     // info!("bad and seal bytes {}, {}", buf[2048], buf[2049]);
 

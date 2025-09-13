@@ -623,6 +623,7 @@ dependencies = [
  "embassy-time",
  "embedded-hal-async",
  "embedded-hal-bus",
+ "embedded-nand",
  "embedded-nand-async",
  "panic-halt",
  "panic-probe",

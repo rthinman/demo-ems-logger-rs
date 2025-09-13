@@ -188,8 +188,8 @@ async fn main(spawner: Spawner) {
     // info!("Page 0 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
 
     let mut buf: [u8; 2050] = [0; 2050];
-    let foo = flash.read_page_slice_async(PageIndex::new(0), ColumnAddress::new(0), &mut buf).await.unwrap();
-    info!("Page 0 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
+    let foo = flash.read_page_slice_async(PageIndex::new(1), ColumnAddress::new(0), &mut buf).await.unwrap();
+    info!("Page 1 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
     info!("bad and seal bytes {}, {}", buf[2048], buf[2049]);
     // Check ECC
     match flash.device.ecc_status(&mut flash.spi).await.unwrap() {
@@ -238,6 +238,15 @@ async fn main(spawner: Spawner) {
     // // Read page 0 again to verify first few bytes, last few bytes, and "seal" byte.
     // let foo = flash.read_page_slice_async(PageIndex::new(0), ColumnAddress::new(0), &mut buf).await.unwrap();
     // info!("Page 0 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
+    // info!("bad and seal bytes {}, {}", buf[2048], buf[2049]);
+
+    // Copy page 0 to page 1.
+    // // Unprotect array.
+    // let foo = flash.device.write_register_cmd(&mut flash.spi, <W25N01GW as SpiNand::<2048>>::CONFIGURATION_REGISTER, 0x00).await.unwrap();
+    // let foo = flash.copy_page_async(PageIndex::new(0), PageIndex::new(1)).await.unwrap();
+    // info!("Copy page 0 to 1");
+    // let foo = flash.read_page_slice_async(PageIndex::new(1), ColumnAddress::new(0), &mut buf).await.unwrap();
+    // info!("Page 1 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
     // info!("bad and seal bytes {}, {}", buf[2048], buf[2049]);
 
 

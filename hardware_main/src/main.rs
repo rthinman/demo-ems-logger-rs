@@ -2,6 +2,8 @@
 #![no_main]
 
 mod alarm_timer_state;
+mod dhara_nand_async;
+mod my_flash;
 mod fmt;
 mod rtclock;
 mod temp_sensor;
@@ -36,7 +38,9 @@ use spi_nand_devices::winbond::w25n::{asyn::{BBMAsync, ECCBasicAsync, ODSAsync},
 use business_logic::{door::DoorEvent, logger::{self, AlarmTimerTrigger, Logger, LoggerEvent, TemperatureSample}};
 use business_logic::timestamp::Timestamp;
 use alarm_timer_state::{AlarmTimerState, TempTimerActive};
+use dhara_nand_async::{DharaNandAsync, DharaError, DharaPage, DharaBlock};
 use fmt::{info, warn, unwrap};
+use my_flash::MyFlash;
 use rtclock::{Rtclock};
 // use temp_sensor::{AMBIENT_ADDRESS, DualTempSensor, VACCINE_ADDRESS};
 
@@ -125,25 +129,57 @@ async fn main(spawner: Spawner) {
 
     // Create [spi_flash::device::SpiFlash] instance  
     let device = W25N01GW::new();
-    //let b = <W25N01GW as SpiNand<2048>>::BLOCK_COUNT;
+    let num_blocks = <W25N01GW as SpiNand<2048>>::BLOCK_COUNT;
+    let page_size = <W25N01GW as SpiNand<2048>>::PAGE_SIZE;
+    let pages_per_block = <W25N01GW as SpiNand<2048>>::PAGES_PER_BLOCK;
+    info!("Flash device W25N01GW: {} blocks, {} pages/block, {} bytes/page", num_blocks, pages_per_block, page_size);
+    
 
     // Create async SPI device using ExclusiveDevice (only one device on bus)
     let spi_device = embedded_hal_bus::spi::ExclusiveDevice::new(spi, cs, embedded_hal_bus::spi::NoDelay).unwrap();
     let mut flash = SpiNandDevice::new(spi_device, device);
 
-    // Test methods from trait SpiNandDevice implemented for SpiNandAsync:
-    let blk = flash.reset_async().await.unwrap();
-    embassy_time::Timer::after_secs(1).await;
-    let jed = flash.verify_jedec_async().await.unwrap();
-    // And from SpiNandAsync itself.
-    info!("Flash reset result: {:?}", blk);
-    info!("Flash JEDEC ID: {:?}", jed);
-    let reg1 = flash.device.read_register_cmd(&mut flash.spi, 0xA0).await.unwrap();
-    info!("Flash Register 1 (0xA0): {:?}", reg1);
-    let reg2 = flash.device.read_register_cmd(&mut flash.spi, 0xB0).await.unwrap();
-    info!("Flash Register 2 (0xB0): {:?}", reg2);
-    let reg3 = flash.device.read_register_cmd(&mut flash.spi, 0xC0).await.unwrap();
-    info!("Flash Register 3 (0xC0): {:?}", reg3);
+    let mut my_flash = MyFlash::new(
+        flash,
+        my_flash::log2(page_size),  // log2_page_size = 11 for 2048 byte pages
+        my_flash::log2(pages_per_block),  // log2_ppb = 6 for 64 pages/block
+        num_blocks,
+    );
+
+    my_flash.initialize().await.unwrap();
+
+    info!("checking MyFlash parameters: page size {}, pages/block {}, num blocks {}",
+        1 << my_flash.get_log2_page_size(),
+        1 << my_flash.get_log2_ppb(),
+        my_flash.get_num_blocks()
+    );
+
+    // Check MyFlash implementation.
+    let bad = my_flash.is_bad(0).await;
+    info!("Block 0 bad? {}", bad);
+    let free = my_flash.is_free(0).await; // Should be programmed.
+    info!("Page 0 free? {}", free);
+    let free = my_flash.is_free(1).await; // Should be free.
+    info!("Page 1 free? {}", free);
+
+    let mut small_buf: [u8; 2] = [0; 10];
+    let res = my_flash.read(0, 0, 5, &mut small_buf).await;
+    // Should be 0, 1, 53, 0xFF, 0xFF.
+    info!("Read page 0, first 5 bytes: {:?}, result {:?}", &small_buf[..5], res);
+
+    // // Test methods from trait SpiNandDevice implemented for SpiNandAsync:
+    // let blk = flash.reset_async().await.unwrap();
+    // embassy_time::Timer::after_secs(1).await;
+    // let jed = flash.verify_jedec_async().await.unwrap();
+    // // And from SpiNandAsync itself.
+    // info!("Flash reset result: {:?}", blk);
+    // info!("Flash JEDEC ID: {:?}", jed);
+    // let reg1 = flash.device.read_register_cmd(&mut flash.spi, 0xA0).await.unwrap();
+    // info!("Flash Register 1 (0xA0): {:?}", reg1);
+    // let reg2 = flash.device.read_register_cmd(&mut flash.spi, 0xB0).await.unwrap();
+    // info!("Flash Register 2 (0xB0): {:?}", reg2);
+    // let reg3 = flash.device.read_register_cmd(&mut flash.spi, 0xC0).await.unwrap();
+    // info!("Flash Register 3 (0xC0): {:?}", reg3);
 
     // for i in 0..1024 {
     //     // let (bb0, bb1) = flash
@@ -162,42 +198,42 @@ async fn main(spawner: Spawner) {
 
     // Test Winbond-specific traits and their methods
     // Bad block management
-    let lut = flash.device.is_lut_full(&mut flash.spi).await.unwrap();
-    info!("look-up table full {:?}", lut);
-    let lut = flash.device.read_lut_cmd(&mut flash.spi).await.unwrap();
-    // Basic ECC
-    let ecc_status = flash.device.ecc_status(&mut flash.spi).await.unwrap();
-    // Output driver strength
-    let driver_strength = flash.device.get_output_driver_strength(&mut flash.spi).await.unwrap();
+    // let lut = flash.device.is_lut_full(&mut flash.spi).await.unwrap();
+    // info!("look-up table full {:?}", lut);
+    // let lut = flash.device.read_lut_cmd(&mut flash.spi).await.unwrap();
+    // // Basic ECC
+    // let ecc_status = flash.device.ecc_status(&mut flash.spi).await.unwrap();
+    // // Output driver strength
+    // let driver_strength = flash.device.get_output_driver_strength(&mut flash.spi).await.unwrap();
 
     // Test highest level flash interface, the NandFlash trait.
 
     // Print the flash's capacity
-    let cap = flash.capacity();
-    info!("capacity: {}", cap);
-    // Check block 0 status
-    match flash.block_status(BlockIndex::new(0)).await.unwrap() {
-        BlockStatus::Ok => {info!("Block 0 OK")},
-        BlockStatus::Failed => {info!("Block 0 is bad")},
-        _ => {info!("Block 0 unknown status")},
-    }
+    // let cap = flash.capacity();
+    // info!("capacity: {}", cap);
+    // // Check block 0 status
+    // match flash.block_status(BlockIndex::new(0)).await.unwrap() {
+    //     BlockStatus::Ok => {info!("Block 0 OK")},
+    //     BlockStatus::Failed => {info!("Block 0 is bad")},
+    //     _ => {info!("Block 0 unknown status")},
+    // }
 
     // Read page 0, first few bytes, last few bytes with NandFlash::read(), though it is less flexible.
     // let mut buf: [u8; 2048] = [0; 2048];
     // let foo = flash.read(0, &mut buf).await.unwrap();
     // info!("Page 0 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
 
-    let mut buf: [u8; 2050] = [0; 2050];
-    let foo = flash.read_page_slice_async(PageIndex::new(1), ColumnAddress::new(0), &mut buf).await.unwrap();
-    info!("Page 1 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
-    info!("bad and seal bytes {}, {}", buf[2048], buf[2049]);
-    // Check ECC
-    match flash.device.ecc_status(&mut flash.spi).await.unwrap() {
-        ECCStatus::Ok => {info!("read OK");},
-        ECCStatus::Corrected => {info!("read corrected");},
-        ECCStatus::Failed => {info!("read failed");},
-        _ => {info!("read ECC indeterminate");},
-    }
+    // let mut buf: [u8; 2050] = [0; 2050];
+    // let foo = flash.read_page_slice_async(PageIndex::new(1), ColumnAddress::new(0), &mut buf).await.unwrap();
+    // info!("Page 1 data, {}, {}, {}...{}, {}", buf[0], buf[1], buf[2], buf[2046], buf[2047]);
+    // info!("bad and seal bytes {}, {}", buf[2048], buf[2049]);
+    // // Check ECC
+    // match flash.device.ecc_status(&mut flash.spi).await.unwrap() {
+    //     ECCStatus::Ok => {info!("read OK");},
+    //     ECCStatus::Corrected => {info!("read corrected");},
+    //     ECCStatus::Failed => {info!("read failed");},
+    //     _ => {info!("read ECC indeterminate");},
+    // }
     // Only do this once, to minimize erase/write cycles:
     //   Remove write protection on all blocks.
     //   Erase block 0

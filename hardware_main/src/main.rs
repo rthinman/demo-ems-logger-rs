@@ -138,6 +138,11 @@ async fn main(spawner: Spawner) {
     // Create async SPI device using ExclusiveDevice (only one device on bus)
     let spi_device = embedded_hal_bus::spi::ExclusiveDevice::new(spi, cs, embedded_hal_bus::spi::NoDelay).unwrap();
     let mut flash = SpiNandDevice::new(spi_device, device);
+    // flash.reset_async().await.unwrap();
+    // embassy_time::Timer::after_secs(1).await;
+    let jed = flash.verify_jedec_async().await.unwrap();
+    // And from SpiNandAsync itself.
+    info!("Flash verification completed, JEDEC ID correct: {:?}", jed);
 
     let mut my_flash = MyFlash::new(
         flash,
@@ -155,18 +160,45 @@ async fn main(spawner: Spawner) {
     );
 
     // Check MyFlash implementation.
+    // One time mark block 0 as bad for testing.
+    // my_flash.mark_bad(0).await;
+
+    // One time erase for testing.
+    // my_flash.erase(0).await.unwrap();
+
     let bad = my_flash.is_bad(0).await;
     info!("Block 0 bad? {}", bad);
-    let free = my_flash.is_free(0).await; // Should be programmed.
+    let free = my_flash.is_free(0).await; // Should be programmed, as is page 1 at this point.
     info!("Page 0 free? {}", free);
-    let free = my_flash.is_free(1).await; // Should be free.
-    info!("Page 1 free? {}", free);
 
-    let mut small_buf: [u8; 2] = [0; 10];
+    let mut small_buf: [u8; 10] = [0; 10];
+    // // New data for page 0
+    small_buf[0] = 13;
+    small_buf[1] = 27;
+    small_buf[2] = 100;
+
+    let free = my_flash.is_free(4).await; // Should be free.
+    info!("Page 4 free? {}", free);
+    // info!("write page 3");
+    // my_flash.prog(3, &small_buf).await.unwrap();
+
+    info!("copying page 0 to 4");
+    my_flash.copy(0, 4).await.unwrap();
+    // Check again.
+    let free = my_flash.is_free(4).await; // Should not be free any longer.
+    info!("Page 4 free? {}", free);
+
+    let mut small_buf: [u8; 10] = [0; 10];
     let res = my_flash.read(0, 0, 5, &mut small_buf).await;
     // Should be 0, 1, 53, 0xFF, 0xFF.
-    info!("Read page 0, first 5 bytes: {:?}, result {:?}", &small_buf[..5], res);
+    info!("Read page 0, first 5 bytes: {:?}", &small_buf[..5]);
 
+    let mut small_buf: [u8; 10] = [0; 10];
+    let res = my_flash.read(4, 0, 5, &mut small_buf).await;
+    info!("Read page 4, first 5 bytes: {:?}", &small_buf[..5]);
+
+ 
+ 
     // // Test methods from trait SpiNandDevice implemented for SpiNandAsync:
     // let blk = flash.reset_async().await.unwrap();
     // embassy_time::Timer::after_secs(1).await;

@@ -2,20 +2,29 @@ use embedded_nand_async::NandFlash;
 use spi_nand_devices::winbond::w25n::asyn;
 use spi_nand::cmd_async::SpiNandAsync;
 use spi_nand::{ECCStatus, SpiNand, SpiNandDevice};
+use embedded_hal_async::spi::SpiDevice;
 //use spi_nand_devices::winbond::w25n::{asyn::{BBMAsync, ECCBasicAsync, ODSAsync}, W25N01GW};
 
 use crate::dhara_nand_async::{DharaNandAsync, DharaPage, DharaBlock, DharaError};
 
-pub struct MyFlash<NF: NandFlash + SpiNandAsync<SPI, {N}>> {
-    nand: NF,
+pub struct MyFlash<SPI, D, const N: usize> 
+where 
+    SPI: SpiDevice,
+    D: SpiNandAsync<SPI, N> + core::fmt::Debug,
+{
+    nand: SpiNandDevice<SPI, D, N>,
     log2_page_size: u8,
     log2_ppb: u8,
     num_blocks: u32,
     layout_buffer: [u8; 2050], // TODO: make configurable.
 }
 
-impl<NF: NandFlash + SpiNandAsync<SPI, {N}>> MyFlash<NF> {
-    pub fn new(nand: NF, log2_page_size: u8, log2_ppb: u8, num_blocks: u32) -> Self {
+impl<SPI, D, const N: usize> MyFlash<SPI, D, N> 
+where 
+    SPI: SpiDevice,
+    D: SpiNandAsync<SPI, N> + core::fmt::Debug,
+{
+    pub fn new(nand: SpiNandDevice<SPI, D, N>, log2_page_size: u8, log2_ppb: u8, num_blocks: u32) -> Self {
         let layout_buffer = [0u8; 2050]; // TODO: make configurable.
         Self {
             nand,
@@ -26,22 +35,27 @@ impl<NF: NandFlash + SpiNandAsync<SPI, {N}>> MyFlash<NF> {
         }
     }
 
-    pub async fn initialize(&mut self) -> Result<(), NF::Error> {
+    pub async fn initialize(&mut self) -> Result<(), <SpiNandDevice<SPI, D, N> as embedded_nand_async::ErrorType>::Error> {
         // Wait until the device is ready.
         while self.nand.device.is_busy(&mut self.nand.spi).await? {}
         // Reset the device.
-        self.nand.reset_async().await?;
+        self.nand.device.reset_cmd(&mut self.nand.spi).await?;
+        // self.nand.device.reset_async(&mut self.nand.spi).await?;
         // wait until ready again.
         while self.nand.device.is_busy(&mut self.nand.spi).await? {}
         // Check that the correct IC is installed.
-        self.nand.verify_id_async().await?;
+        // self.nand.device.verify_id_async(&mut self.nand.spi).await?;
         // By default, the W25N01GW powers up with block protection enabled.
         self.nand.device.disable_block_protection(&mut self.nand.spi).await
     }
 }
 
 
-impl<NF: NandFlash + SpiNandAsync<SPI, {N}>> DharaNandAsync<F> for MyFlash<NF> {
+impl<SPI, D, const N: usize> DharaNandAsync<SpiNandDevice<SPI, D, N>> for MyFlash<SPI, D, N> 
+where 
+    SPI: SpiDevice,
+    D: SpiNandAsync<SPI, N> + core::fmt::Debug,
+{
     fn get_log2_page_size(&self) -> u8 {
         self.log2_page_size
     }
@@ -60,6 +74,7 @@ impl<NF: NandFlash + SpiNandAsync<SPI, {N}>> DharaNandAsync<F> for MyFlash<NF> {
         match self.nand.block_status(block).await {
             Ok(embedded_nand::BlockStatus::Ok) => false,
             Ok(embedded_nand::BlockStatus::Failed) => true,
+            Ok(_) => true, // Any other status, consider it bad
             Err(_) => true, // If read fails, consider it bad.
         }
     }
@@ -70,12 +85,12 @@ impl<NF: NandFlash + SpiNandAsync<SPI, {N}>> DharaNandAsync<F> for MyFlash<NF> {
         // Ignore result, as there's nothing we can do if it fails.
     }
 
-    async fn erase(&mut self, blk: DharaBlock) -> Result<(),DharaError<F>> {
+    async fn erase(&mut self, blk: DharaBlock) -> Result<(),DharaError<SpiNandDevice<SPI, D, N>>> {
         let block = embedded_nand::BlockIndex::new(blk as u16);
         self.nand.erase_block(block).await.map_err(|e| DharaError::Flash(e))
     }
 
-    async fn prog(&mut self, page: DharaPage, data: &[u8]) -> Result<(),DharaError<F>> {
+    async fn prog(&mut self, page: DharaPage, data: &[u8]) -> Result<(),DharaError<SpiNandDevice<SPI, D, N>>> {
         let page_index = embedded_nand::PageIndex::new(page);
         let column_addr = embedded_nand::ColumnAddress::new(0);
         self.layout_buffer[..data.len()].copy_from_slice(data);
@@ -98,7 +113,7 @@ impl<NF: NandFlash + SpiNandAsync<SPI, {N}>> DharaNandAsync<F> for MyFlash<NF> {
         }
     }
 
-    async fn read(&mut self, page: u32, offset: usize, length: usize, data: &mut[u8]) -> Result<(), DharaError<F>> {
+    async fn read(&mut self, page: u32, offset: usize, length: usize, data: &mut[u8]) -> Result<(), DharaError<SpiNandDevice<SPI, D, N>>> {
         let page_index = embedded_nand::PageIndex::new(page);
         let column_addr = embedded_nand::ColumnAddress::new(offset as u16);
         self.nand.read_page_slice_async(page_index, column_addr, &mut data[..length]).await.map_err(|e| DharaError::Flash(e))
@@ -106,7 +121,7 @@ impl<NF: NandFlash + SpiNandAsync<SPI, {N}>> DharaNandAsync<F> for MyFlash<NF> {
         // TODO: cache data and/or metadata.
     }
 
-    async fn copy(&mut self, src: DharaPage, dst: DharaPage) -> Result<(),DharaError<F>> {
+    async fn copy(&mut self, src: DharaPage, dst: DharaPage) -> Result<(),DharaError<SpiNandDevice<SPI, D, N>>> {
         let src_page_index = embedded_nand::PageIndex::new(src);
         let dst_page_index = embedded_nand::PageIndex::new(dst);
         // The W25N01GW copies the full page plus spare area internally.

@@ -546,6 +546,9 @@ dependencies = [
 [[package]]
 name = "embedded-nand"
 version = "0.1.0"
+dependencies = [
+ "defmt 0.3.100",
+]
 
 [[package]]
 name = "embedded-nand-async"
@@ -794,6 +797,7 @@ checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 name = "spi-nand"
 version = "0.1.0"
 dependencies = [
+ "defmt 0.3.100",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-nand",
@@ -805,6 +809,7 @@ dependencies = [
 name = "spi-nand-devices"
 version = "0.1.0"
 dependencies = [
+ "defmt 0.3.100",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-nand",

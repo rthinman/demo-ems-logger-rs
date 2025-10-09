@@ -3,14 +3,16 @@
 
 use embedded_nand_async::{NandFlash, NandFlashError, NandFlashErrorKind};
 use embedded_nand;
+use core::fmt::Debug;
 
 // Reminder:
 // Sectors (DharaSector) are what the outside world uses, and are virtual.
 // Pages (DharaPage) are the smallest writeable portion of the NAND chip, and are the same size as sectors, but physical.
 // An erase block (DharaBlock) is a group of pages that are erased together.
 
-// TODO: move back to dhara crate when async/await is stable.
-#[derive(Debug,PartialEq)]
+// TODO: move back to dhara crate.
+#[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DharaError<F: embedded_nand_async::NandFlash> {
     Flash(F::Error),
     BadBlock,
@@ -24,7 +26,7 @@ pub enum DharaError<F: embedded_nand_async::NandFlash> {
     Max,        // TODO: do we need "max", because Rust knows how many are in an enum?
 }
 
-impl<F> embedded_nand::NandFlashError for DharaError<F>
+impl<F> embedded_nand_async::NandFlashError for DharaError<F>
     where 
         F: embedded_nand_async::NandFlash + Debug 
 {
@@ -34,14 +36,14 @@ impl<F> embedded_nand::NandFlashError for DharaError<F>
     //     DharaError::Flash(err)
     // }
 
-    fn kind(&self) -> embedded_nand::NandFlashErrorKind {
+    fn kind(&self) -> embedded_nand_async::NandFlashErrorKind {
         match self {
             DharaError::Flash(e) => e.kind(),
-            DharaError::BadBlock => embedded_nand::NandFlashErrorKind::BlockFail(None),
-            DharaError::ECC => embedded_nand::NandFlashErrorKind::Other,
-            DharaError::TooBad => embedded_nand::NandFlashErrorKind::Other,
-            DharaError::Recover => embedded_nand::NandFlashErrorKind::Other,
-            _ => embedded_nand::NandFlashErrorKind::Other,
+            DharaError::BadBlock => embedded_nand_async::NandFlashErrorKind::BlockFail(None),
+            DharaError::ECC => embedded_nand_async::NandFlashErrorKind::Other,
+            DharaError::TooBad => embedded_nand_async::NandFlashErrorKind::Other,
+            DharaError::Recover => embedded_nand_async::NandFlashErrorKind::Other,
+            _ => embedded_nand_async::NandFlashErrorKind::Other,
         }
     }
 }
@@ -53,7 +55,7 @@ impl<F> From<NandFlashErrorKind> for DharaError<F>
     fn from(kind: NandFlashErrorKind) -> Self {
         match kind {
             NandFlashErrorKind::BlockFail(_) => DharaError::BadBlock,
-            _ => DharaError::Flash(kind.into()), // TODO: is this right?
+            _ => DharaError::ECC, // Map other errors to ECC for now
         }
     }
 }

@@ -23,8 +23,8 @@ embedded-hal-async = "1.0.0"
 arrayvec = { version = "0.7.6", default-features = false } # To disable std.
 embedded-nand = { path = "../../embedded-nand/embedded-nand"}
 embedded-nand-async = { path = "../../embedded-nand/embedded-nand-async"}
-spi-nand = { path = "../../embedded-nand/spi-nand"}
-spi-nand-devices = { path = "../../embedded-nand/spi-nand-devices"}
+spi-nand = { path = "../../embedded-nand/spi-nand", features = ["defmt"]}
+spi-nand-devices = { path = "../../embedded-nand/spi-nand-devices", features = ["defmt"]}
 #embedded-hal = "1.0.0"
 embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 

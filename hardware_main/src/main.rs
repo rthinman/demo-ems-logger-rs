@@ -177,25 +177,25 @@ async fn main(spawner: Spawner) {
     small_buf[1] = 27;
     small_buf[2] = 100;
 
-    let free = my_flash.is_free(4).await; // Should be free.
-    info!("Page 4 free? {}", free);
-    // info!("write page 3");
-    // my_flash.prog(3, &small_buf).await.unwrap();
+    // let free = my_flash.is_free(4).await; // Should be free.
+    // info!("Page 4 free? {}", free);
+    // info!("write page 0");
+    // my_flash.prog(0, &small_buf).await.unwrap();
 
-    info!("copying page 0 to 4");
-    my_flash.copy(0, 4).await.unwrap();
+    // info!("copying page 0 to 1");
+    // my_flash.copy(0, 1).await.unwrap();
     // Check again.
-    let free = my_flash.is_free(4).await; // Should not be free any longer.
-    info!("Page 4 free? {}", free);
+    let free = my_flash.is_free(1).await; // Should not be free any longer.
+    info!("Page 1 free? {}", free);
 
     let mut small_buf: [u8; 10] = [0; 10];
     let res = my_flash.read(0, 0, 5, &mut small_buf).await;
-    // Should be 0, 1, 53, 0xFF, 0xFF.
+    // Should be 13, 27, 100, 0, 0.
     info!("Read page 0, first 5 bytes: {:?}", &small_buf[..5]);
 
     let mut small_buf: [u8; 10] = [0; 10];
-    let res = my_flash.read(4, 0, 5, &mut small_buf).await;
-    info!("Read page 4, first 5 bytes: {:?}", &small_buf[..5]);
+    let res = my_flash.read(1, 0, 5, &mut small_buf).await;
+    info!("Read page 1, first 5 bytes: {:?}", &small_buf[..5]);
 
  
  

@@ -3,14 +3,14 @@ use spi_nand_devices::winbond::w25n::asyn;
 use spi_nand::cmd_async::SpiNandAsync;
 use spi_nand::{ECCStatus, SpiNand, SpiNandDevice};
 use embedded_hal_async::spi::SpiDevice;
-//use spi_nand_devices::winbond::w25n::{asyn::{BBMAsync, ECCBasicAsync, ODSAsync}, W25N01GW};
+use spi_nand_devices::winbond::w25n::{asyn::{BBMAsync, ECCBasicAsync, ODSAsync}, W25N01GW};
 
 use crate::dhara_nand_async::{DharaNandAsync, DharaPage, DharaBlock, DharaError};
 
 pub struct MyFlash<SPI, D, const N: usize> 
 where 
     SPI: SpiDevice,
-    D: SpiNandAsync<SPI, N> + core::fmt::Debug,
+    D: SpiNandAsync<SPI, N> + ECCBasicAsync<SPI, N> + core::fmt::Debug,
 {
     nand: SpiNandDevice<SPI, D, N>,
     log2_page_size: u8,
@@ -22,7 +22,7 @@ where
 impl<SPI, D, const N: usize> MyFlash<SPI, D, N> 
 where 
     SPI: SpiDevice,
-    D: SpiNandAsync<SPI, N> + core::fmt::Debug,
+    D: SpiNandAsync<SPI, N> + ECCBasicAsync<SPI, N> + core::fmt::Debug,
 {
     pub fn new(nand: SpiNandDevice<SPI, D, N>, log2_page_size: u8, log2_ppb: u8, num_blocks: u32) -> Self {
         let layout_buffer = [0u8; 2050]; // TODO: make configurable.
@@ -54,7 +54,7 @@ where
 impl<SPI, D, const N: usize> DharaNandAsync<SpiNandDevice<SPI, D, N>> for MyFlash<SPI, D, N> 
 where 
     SPI: SpiDevice,
-    D: SpiNandAsync<SPI, N> + core::fmt::Debug,
+    D: SpiNandAsync<SPI, N> + ECCBasicAsync<SPI, N> + core::fmt::Debug,
 {
     fn get_log2_page_size(&self) -> u8 {
         self.log2_page_size
@@ -116,18 +116,97 @@ where
     async fn read(&mut self, page: u32, offset: usize, length: usize, data: &mut[u8]) -> Result<(), DharaError<SpiNandDevice<SPI, D, N>>> {
         let page_index = embedded_nand::PageIndex::new(page);
         let column_addr = embedded_nand::ColumnAddress::new(offset as u16);
-        self.nand.read_page_slice_async(page_index, column_addr, &mut data[..length]).await.map_err(|e| DharaError::Flash(e))
-        // TODO: implement ECC.
+        
+        // Perform the read operation
+        match self.nand.read_page_slice_async(page_index, column_addr, &mut data[..length]).await {
+            Ok(_) => {
+                // Check ECC status after successful read
+                match self.nand.device.ecc_status(&mut self.nand.spi).await {
+                    Ok(spi_nand::ECCStatus::Ok) => {
+                        // No ECC errors detected
+                        Ok(())
+                    },
+                    Ok(spi_nand::ECCStatus::Corrected) => {
+                        // ECC corrected errors - log warning but return success
+                        defmt::warn!("ECC corrected errors on page {}", page);
+                        Ok(())
+                    },
+                    Ok(spi_nand::ECCStatus::Failed) => {
+                        // Uncorrectable ECC errors
+                        defmt::error!("Uncorrectable ECC errors on page {}", page);
+                        Err(DharaError::ECC)
+                    },
+                    Ok(spi_nand::ECCStatus::Failing) => {
+                        // ECC corrected but approaching threshold
+                        defmt::warn!("ECC failing threshold approached on page {}", page);
+                        Ok(())
+                    },
+                    Err(e) => {
+                        // Error reading ECC status
+                        defmt::error!("Failed to read ECC status for page {}", page);
+                        Err(DharaError::Flash(e.into()))
+                    }
+                }
+            },
+            Err(e) => {
+                // Flash read operation failed
+                Err(DharaError::Flash(e))
+            }
+        }
+        
         // TODO: cache data and/or metadata.
     }
 
     async fn copy(&mut self, src: DharaPage, dst: DharaPage) -> Result<(),DharaError<SpiNandDevice<SPI, D, N>>> {
         let src_page_index = embedded_nand::PageIndex::new(src);
         let dst_page_index = embedded_nand::PageIndex::new(dst);
-        // The W25N01GW copies the full page plus spare area internally.
-        // TODO: this is the simple way, but does not handle ECC.
-        // For that, we need to read first, reaching deeper into the implementation, check ECC, then write.
-        self.nand.copy_page_async(src_page_index, dst_page_index).await.map_err(|e| DharaError::Flash(e))
+        
+        // Step 1: Load source page into device's internal buffer
+        self.nand.device.page_read_cmd(&mut self.nand.spi, src_page_index).await.map_err(|e| DharaError::Flash(e))?;
+        
+        // Wait for read to complete
+        while self.nand.device.is_busy(&mut self.nand.spi).await.map_err(|e| DharaError::Flash(e))? {}
+        
+        // Step 2: Check ECC status after reading into internal buffer
+        match self.nand.device.ecc_status(&mut self.nand.spi).await {
+            Ok(spi_nand::ECCStatus::Ok) => {
+                // Source read OK, proceed with copy
+            },
+            Ok(spi_nand::ECCStatus::Corrected) => {
+                // ECC corrected errors on source - log but continue
+                defmt::warn!("ECC corrected errors when copying from page {}", src);
+            },
+            Ok(spi_nand::ECCStatus::Failed) => {
+                // Uncorrectable ECC errors on source
+                defmt::error!("Uncorrectable ECC errors when copying from page {}", src);
+                return Err(DharaError::ECC);
+            },
+            Ok(spi_nand::ECCStatus::Failing) => {
+                // ECC approaching threshold - log but continue
+                defmt::warn!("ECC failing threshold when copying from page {}", src);
+            },
+            Err(e) => {
+                defmt::error!("Failed to read ECC status when copying from page {}", src);
+                return Err(DharaError::Flash(e.into()));
+            }
+        }
+        
+        // Step 3: Enable writing
+        self.nand.device.write_enable_cmd(&mut self.nand.spi).await.map_err(|e| DharaError::Flash(e))?;
+        
+        // Step 4: Program from internal buffer to destination
+        self.nand.device.program_execute_cmd(&mut self.nand.spi, dst_page_index).await.map_err(|e| DharaError::Flash(e))?;
+        
+        // Step 5: Wait for program to complete
+        while self.nand.device.is_busy(&mut self.nand.spi).await.map_err(|e| DharaError::Flash(e))? {}
+        
+        // Step 6: Check if program operation succeeded
+        if self.nand.device.program_failed(&mut self.nand.spi).await.map_err(|e| DharaError::Flash(e))? {
+            defmt::error!("Program failed when copying to page {}", dst);
+            return Err(DharaError::Flash(spi_nand::error::SpiFlashError::ProgramFailed.into()));
+        }
+        
+        Ok(())
     }
 }
 

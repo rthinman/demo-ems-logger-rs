@@ -17,6 +17,8 @@ This is a Rust embedded systems project for an EMS (Equipment Monitoring System)
 ## Development Commands
 - Build: `cargo build`
 - Test business logic: `cargo test -p business_logic`
+- Build hardware firmware: `cargo build -p hardware_main --target thumbv7em-none-eabi`
+- Check hardware firmware: `cargo check -p hardware_main --target thumbv7em-none-eabi`
 - Flash firmware: `cargo run -p hardware_main` (requires probe-rs/OpenOCD setup)
 
 ## Hardware Pins
